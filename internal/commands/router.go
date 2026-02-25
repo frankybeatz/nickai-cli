@@ -1,0 +1,76 @@
+package commands
+
+import (
+	"strings"
+)
+
+// CommandType identifies what kind of response was produced.
+type CommandType int
+
+const (
+	TypeChat CommandType = iota
+	TypeHelp
+	TypeAgents
+	TypeTemplates
+	TypeStatus
+	TypeOrders
+	TypePrice
+	TypeBuy
+	TypeSell
+	TypeConfig
+	TypeClear
+	TypeQuit
+	TypeUnknown
+)
+
+// Result holds the parsed result of user input.
+type Result struct {
+	Type      CommandType
+	Input     string   // original input
+	Args      []string // arguments after the command
+	IsCommand bool
+}
+
+// Route parses raw user input and returns a Result.
+// The UI layer is responsible for rendering.
+func Route(input string) Result {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return Result{}
+	}
+
+	if !strings.HasPrefix(trimmed, "/") {
+		return Result{Type: TypeChat, Input: trimmed, IsCommand: false}
+	}
+
+	parts := strings.Fields(trimmed)
+	cmd := strings.ToLower(parts[0])
+	args := parts[1:]
+
+	switch cmd {
+	case "/help":
+		return Result{Type: TypeHelp, Input: trimmed, Args: args, IsCommand: true}
+	case "/agents":
+		return Result{Type: TypeAgents, Input: trimmed, Args: args, IsCommand: true}
+	case "/templates":
+		return Result{Type: TypeTemplates, Input: trimmed, Args: args, IsCommand: true}
+	case "/status":
+		return Result{Type: TypeStatus, Input: trimmed, Args: args, IsCommand: true}
+	case "/orders":
+		return Result{Type: TypeOrders, Input: trimmed, Args: args, IsCommand: true}
+	case "/price":
+		return Result{Type: TypePrice, Input: trimmed, Args: args, IsCommand: true}
+	case "/buy":
+		return Result{Type: TypeBuy, Input: trimmed, Args: args, IsCommand: true}
+	case "/sell":
+		return Result{Type: TypeSell, Input: trimmed, Args: args, IsCommand: true}
+	case "/config":
+		return Result{Type: TypeConfig, Input: trimmed, Args: args, IsCommand: true}
+	case "/clear":
+		return Result{Type: TypeClear, Input: trimmed, Args: args, IsCommand: true}
+	case "/quit", "/exit":
+		return Result{Type: TypeQuit, Input: trimmed, Args: args, IsCommand: true}
+	default:
+		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
+	}
+}
