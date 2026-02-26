@@ -1,0 +1,71 @@
+{
+  "name": "btc-momentum",
+  "nodes": [
+    {
+      "id": "sched-1",
+      "type": "schedule",
+      "name": "Every 15 Minutes",
+      "config": {
+        "interval": "15m",
+        "timezone": "UTC"
+      },
+      "connects_to": ["feed-1"]
+    },
+    {
+      "id": "feed-1",
+      "type": "price_feed",
+      "name": "BTC Price Feed",
+      "config": {
+        "symbol": "BTCUSDT",
+        "exchange": "binance",
+        "timeframe": "15m",
+        "lookback": 50
+      },
+      "connects_to": ["llm-1"]
+    },
+    {
+      "id": "llm-1",
+      "type": "llm",
+      "name": "Momentum Analyzer",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt": "Analyze BTC price action for momentum signals. Consider EMA crossovers, RSI, and volume. Return BUY, SELL, or HOLD with confidence score.",
+        "temperature": 0.3
+      },
+      "connects_to": ["cond-1"]
+    },
+    {
+      "id": "cond-1",
+      "type": "condition",
+      "name": "Signal Filter",
+      "config": {
+        "condition": "signal != HOLD AND confidence >= 0.7",
+        "pass_to": "trade-1",
+        "fail_to": "notify-1"
+      },
+      "connects_to": ["trade-1", "notify-1"]
+    },
+    {
+      "id": "trade-1",
+      "type": "trade",
+      "name": "Execute BTC Trade",
+      "config": {
+        "symbol": "BTCUSDT",
+        "order_type": "market",
+        "position_size_pct": 10,
+        "stop_loss_pct": 2,
+        "take_profit_pct": 5
+      },
+      "connects_to": ["notify-1"]
+    },
+    {
+      "id": "notify-1",
+      "type": "notification",
+      "name": "Trade Alert",
+      "config": {
+        "channel": "terminal",
+        "template": "[{{timestamp}}] BTC Momentum: {{signal}} @ ${{price}} (confidence: {{confidence}})"
+      }
+    }
+  ]
+}

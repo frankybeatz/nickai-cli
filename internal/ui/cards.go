@@ -7,7 +7,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/config"
+	"github.com/nickai/cli/internal/credential"
 	"github.com/nickai/cli/internal/mock"
+	"github.com/nickai/cli/internal/workflow"
 )
 
 // --- Connect prompt ---
@@ -223,6 +225,52 @@ func renderPriceCard(p api.Price, width int) string {
 	return Card(width).Render(body)
 }
 
+// --- /watch: live price dashboard ---
+
+func RenderWatch(client *api.PapernickClient, symbols []string, width int) string {
+	if !client.IsConfigured() {
+		return connectPrompt()
+	}
+
+	prices, err := client.GetPrices(symbols)
+	if err != nil {
+		return ErrorStyle.Render("  Failed to fetch prices: ") + err.Error()
+	}
+
+	if len(prices) == 0 {
+		return DimStyle.Render("  No price data returned for: ") + strings.Join(symbols, ", ")
+	}
+
+	cardWidth := min(width-4, 60)
+
+	liveIndicator := lipgloss.NewStyle().
+		Foreground(ColorPrimary).
+		Bold(true).
+		Render("◉ LIVE")
+
+	var rows []string
+	rows = append(rows, liveIndicator)
+	rows = append(rows, "")
+
+	for _, p := range prices {
+		sym := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
+			Render(padRight(p.Symbol, 12))
+		price := BrandStyle.Render(formatPrice(p.Price))
+		rows = append(rows, sym+price)
+	}
+
+	content := strings.Join(rows, "\n")
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Padding(0, 2).
+		Width(cardWidth).
+		Render(content)
+
+	return box
+}
+
 // --- /config ---
 
 func RenderConfigShow(cfg *config.Config) string {
@@ -285,6 +333,223 @@ func RenderConfigHelp() string {
 		"  " + CommandStyle.Render("/config set url <url>") + DimStyle.Render("           — set base URL"),
 		"  " + CommandStyle.Render("/config test") + DimStyle.Render("                    — test API connection"),
 	}
+	return strings.Join(lines, "\n")
+}
+
+// --- /credential ---
+
+func RenderCredentialList(store *credential.Store) string {
+	header := SecondaryStyle.Render("  Saved Credentials\n")
+
+	if len(store.Credentials) == 0 {
+		return header + "\n" + DimStyle.Render("  No credentials saved.") +
+			"\n" + DimStyle.Render("  Add one with ") +
+			CommandStyle.Render("/credential add <name> <exchange> <key> <secret>")
+	}
+
+	var lines []string
+	lines = append(lines, header)
+	for _, c := range store.Credentials {
+		status := StatusIndicator("running")
+		name := BrandStyle.Render(c.Name)
+		exchange := DimStyle.Render(" (" + c.Exchange + ")")
+		key := DimStyle.Render("  Key: ") + maskKeyShort(c.APIKey)
+		lines = append(lines, "  "+status+name+exchange)
+		lines = append(lines, "  "+key)
+	}
+	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render(fmt.Sprintf("  %d credential(s)", len(store.Credentials))))
+	return strings.Join(lines, "\n")
+}
+
+func RenderCredentialAdded(name, exchange string) string {
+	return BotMsgStyle.Render("nick: ") + "Credential " +
+		BrandStyle.Render(name) + " added for " +
+		CommandStyle.Render(exchange) + "."
+}
+
+func RenderCredentialRemoved(name string) string {
+	return BotMsgStyle.Render("nick: ") + "Credential " +
+		BrandStyle.Render(name) + " removed."
+}
+
+// --- /workflow ---
+
+func RenderWorkflowList(store *workflow.Store) string {
+	header := SecondaryStyle.Render("  Workflows\n")
+
+	if len(store.Workflows) == 0 {
+		return header + "\n" + DimStyle.Render("  No workflows yet.") +
+			"\n" + DimStyle.Render("  Create one with ") +
+			CommandStyle.Render("/workflow create <path.json>")
+	}
+
+	var lines []string
+	lines = append(lines, header)
+	for _, w := range store.Workflows {
+		statusStr := "stopped"
+		if w.Status == "running" {
+			statusStr = "running"
+		}
+		status := StatusIndicator(statusStr)
+		name := BrandStyle.Render(padRight(w.Name, 24))
+		nodes := DimStyle.Render(fmt.Sprintf("%d nodes", len(w.Nodes)))
+		runs := DimStyle.Render(fmt.Sprintf("  runs: %d", w.RunCount))
+		lines = append(lines, "  "+status+name+nodes+runs)
+	}
+	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render(fmt.Sprintf("  %d workflow(s)", len(store.Workflows))))
+	return strings.Join(lines, "\n")
+}
+
+func RenderWorkflowShow(w *workflow.Workflow, width int) string {
+	cardWidth := min(width-4, 64)
+
+	statusStr := "stopped"
+	if w.Status == "running" {
+		statusStr = "running"
+	}
+
+	header := StatusIndicator(statusStr) + BrandStyle.Render(w.Name)
+	statusLine := DimStyle.Render("Status: ") + renderWorkflowStatus(w.Status)
+	runsLine := DimStyle.Render("Runs: ") + fmt.Sprintf("%d", w.RunCount)
+	createdLine := DimStyle.Render("Created: ") + w.CreatedAt
+
+	var lines []string
+	lines = append(lines, header)
+	lines = append(lines, statusLine+"    "+runsLine)
+	lines = append(lines, createdLine)
+	if w.LastRun != "" {
+		lines = append(lines, DimStyle.Render("Last Run: ")+w.LastRun)
+	}
+	lines = append(lines, "")
+	lines = append(lines, SecondaryStyle.Render("Nodes:"))
+
+	for i, node := range w.Nodes {
+		prefix := "  "
+		if i < len(w.Nodes)-1 {
+			prefix = "  ├─ "
+		} else {
+			prefix = "  └─ "
+		}
+		nodeType := DimStyle.Render("[" + string(node.Type) + "]")
+		nodeName := lipgloss.NewStyle().Foreground(ColorWhite).Render(node.Name)
+		lines = append(lines, prefix+nodeType+" "+nodeName)
+		if len(node.ConnectsTo) > 0 {
+			conn := DimStyle.Render("     → " + strings.Join(node.ConnectsTo, ", "))
+			lines = append(lines, conn)
+		}
+	}
+
+	content := strings.Join(lines, "\n")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Padding(0, 1).
+		Width(cardWidth).
+		Render(content)
+}
+
+func RenderWorkflowCreated(w *workflow.Workflow) string {
+	return BotMsgStyle.Render("nick: ") + "Workflow " +
+		BrandStyle.Render(w.Name) + " created with " +
+		fmt.Sprintf("%d nodes.", len(w.Nodes))
+}
+
+func RenderWorkflowRunning(name string, logs []workflow.LogEntry) string {
+	header := BotMsgStyle.Render("nick: ") + "Running " +
+		BrandStyle.Render(name) + "...\n"
+
+	var lines []string
+	lines = append(lines, header)
+	for _, log := range logs {
+		ts := DimStyle.Render("[" + log.Timestamp + "]")
+		var statusStyle lipgloss.Style
+		switch log.Status {
+		case "started":
+			statusStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+		case "completed":
+			statusStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
+		case "error":
+			statusStyle = lipgloss.NewStyle().Foreground(ColorError)
+		default:
+			statusStyle = DimStyle
+		}
+		status := statusStyle.Render(padRight(log.Status, 10))
+		nodeName := lipgloss.NewStyle().Foreground(ColorWhite).Render(log.NodeName)
+		msg := DimStyle.Render(log.Message)
+		lines = append(lines, "  "+ts+" "+status+" "+nodeName+" "+msg)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func RenderWorkflowStopped(name string) string {
+	return BotMsgStyle.Render("nick: ") + "Workflow " +
+		BrandStyle.Render(name) + " stopped."
+}
+
+func RenderWorkflowRemoved(name string) string {
+	return BotMsgStyle.Render("nick: ") + "Workflow " +
+		BrandStyle.Render(name) + " removed."
+}
+
+func renderWorkflowStatus(s string) string {
+	switch s {
+	case "running":
+		return BrandStyle.Render(s)
+	default:
+		return DimStyle.Render(s)
+	}
+}
+
+// --- /logs ---
+
+func RenderLogs(w *workflow.Workflow) string {
+	header := SecondaryStyle.Render("  Logs: ") + BrandStyle.Render(w.Name) + "\n"
+
+	if len(w.Logs) == 0 {
+		return header + "\n" + DimStyle.Render("  No execution logs. Run the workflow first with ") +
+			CommandStyle.Render("/workflow run "+w.Name)
+	}
+
+	var lines []string
+	lines = append(lines, header)
+
+	if w.Status == "running" {
+		lines = append(lines, "  "+StatusIndicator("running")+BrandStyle.Render("LIVE")+"\n")
+	} else {
+		lines = append(lines, "  "+DimStyle.Render("Last run summary")+"\n")
+	}
+
+	for _, log := range w.Logs {
+		ts := DimStyle.Render("[" + log.Timestamp + "]")
+		var statusStyle lipgloss.Style
+		switch log.Status {
+		case "started":
+			statusStyle = lipgloss.NewStyle().Foreground(ColorWarning)
+		case "completed":
+			statusStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
+		case "error":
+			statusStyle = lipgloss.NewStyle().Foreground(ColorError)
+		default:
+			statusStyle = DimStyle
+		}
+		status := statusStyle.Render(padRight(log.Status, 10))
+		nodeName := lipgloss.NewStyle().Foreground(ColorWhite).Render(padRight(log.NodeName, 22))
+		msg := DimStyle.Render(log.Message)
+		lines = append(lines, "  "+ts+" "+status+" "+nodeName+" "+msg)
+	}
+
+	// Summary.
+	completed := 0
+	for _, log := range w.Logs {
+		if log.Status == "completed" {
+			completed++
+		}
+	}
+	lines = append(lines, "")
+	lines = append(lines, "  "+DimStyle.Render(fmt.Sprintf("%d/%d nodes completed", completed, completed)))
+
 	return strings.Join(lines, "\n")
 }
 
@@ -402,6 +667,11 @@ func RenderHelp() string {
 		{"/sell ETH 1.0", "Market sell"},
 		{"/buy BTC 0.1 limit 65000", "Limit buy at price"},
 		{"/price BTC ETH", "Live price quotes"},
+		{"/watch BTC ETH SOL", "Live price dashboard"},
+		{"/credential list", "Manage exchange API keys"},
+		{"/workflow list", "Manage automation workflows"},
+		{"/logs <workflow>", "Workflow execution logs"},
+		{"/man <command>", "Detailed manual pages"},
 		{"/config", "Manage API key & connection"},
 		{"/clear", "Clear chat history"},
 		{"/quit", "Exit NickAI"},
@@ -415,6 +685,9 @@ func RenderHelp() string {
 	}
 
 	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render("  Use ")+
+		CommandStyle.Render("/man <command>")+
+		DimStyle.Render(" for detailed docs."))
 	lines = append(lines, DimStyle.Render("  Or just type naturally — ask me to create, deploy, or manage agents."))
 	return strings.Join(lines, "\n")
 }

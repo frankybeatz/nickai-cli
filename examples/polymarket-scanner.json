@@ -1,0 +1,75 @@
+{
+  "name": "polymarket-scanner",
+  "nodes": [
+    {
+      "id": "sched-1",
+      "type": "schedule",
+      "name": "Every 5 Minutes",
+      "config": {
+        "interval": "5m",
+        "timezone": "UTC"
+      },
+      "connects_to": ["data-1"]
+    },
+    {
+      "id": "data-1",
+      "type": "data",
+      "name": "Polymarket API Feed",
+      "config": {
+        "source": "polymarket",
+        "endpoint": "markets",
+        "filters": {
+          "min_volume": 50000,
+          "min_liquidity": 100000,
+          "categories": ["crypto", "politics", "economics"]
+        }
+      },
+      "connects_to": ["filter-1"]
+    },
+    {
+      "id": "filter-1",
+      "type": "filter",
+      "name": "Opportunity Filter",
+      "config": {
+        "conditions": [
+          "abs(price - 0.5) < 0.15",
+          "volume_24h > 10000",
+          "end_date > now + 7d"
+        ]
+      },
+      "connects_to": ["llm-1"]
+    },
+    {
+      "id": "llm-1",
+      "type": "llm",
+      "name": "Market Analyzer",
+      "config": {
+        "model": "claude-sonnet-4-20250514",
+        "prompt": "Analyze these prediction markets. For each, assess if current odds are mispriced based on publicly available information. Return opportunities ranked by edge and confidence.",
+        "temperature": 0.4,
+        "max_tokens": 2048
+      },
+      "connects_to": ["cond-1"]
+    },
+    {
+      "id": "cond-1",
+      "type": "condition",
+      "name": "Edge Threshold",
+      "config": {
+        "condition": "edge >= 0.10 AND confidence >= 0.6",
+        "pass_to": "notify-1",
+        "fail_to": null
+      },
+      "connects_to": ["notify-1"]
+    },
+    {
+      "id": "notify-1",
+      "type": "notification",
+      "name": "Opportunity Alert",
+      "config": {
+        "channel": "terminal",
+        "template": "[POLYMARKET] {{market_title}}\n  Odds: {{price}} | Edge: {{edge}} | Confidence: {{confidence}}\n  Volume 24h: ${{volume_24h}} | Ends: {{end_date}}"
+      }
+    }
+  ]
+}

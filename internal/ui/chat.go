@@ -2,6 +2,8 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -13,7 +15,22 @@ import (
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/commands"
 	"github.com/nickai/cli/internal/config"
+	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/workflow"
 )
+
+// VimMode represents the current editing mode.
+type VimMode int
+
+const (
+	ModeInsert  VimMode = iota // default — normal chat input
+	ModeNormal                 // vim normal mode — navigation
+	ModeCommand                // : command line
+	ModeSearch                 // / search
+)
+
+// editorFinishedMsg is sent when an external editor process completes.
+type editorFinishedMsg struct{ err error }
 
 // message represents a single chat entry.
 type message struct {
@@ -30,9 +47,20 @@ type Model struct {
 	height    int
 	ready     bool
 
-	cfg    *config.Config
-	client *api.PapernickClient
-	agent  *ai.Agent
+	// Vim mode state.
+	vimMode       VimMode
+	commandBuffer string // for COMMAND mode (:buffer)
+	searchBuffer  string // for SEARCH mode (/pattern)
+	searchPattern string // last search pattern
+	normalKeyBuf  string // for multi-key sequences (gg)
+	viewContent   string // cached viewport content for search
+
+	// Data stores.
+	cfg       *config.Config
+	client    *api.PapernickClient
+	agent     *ai.Agent
+	credStore *credential.Store
+	wfStore   *workflow.Store
 }
 
 // New creates the initial model, loading config from disk.
@@ -55,11 +83,17 @@ func New() Model {
 		agent = ai.NewAgent(client, key)
 	}
 
+	credStore, _ := credential.Load()
+	wfStore, _ := workflow.Load()
+
 	return Model{
 		textInput: ti,
+		vimMode:   ModeInsert,
 		cfg:       cfg,
 		client:    client,
 		agent:     agent,
+		credStore: credStore,
+		wfStore:   wfStore,
 	}
 }
 
@@ -68,53 +102,29 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.MouseMsg:
-		// Discard all mouse events to prevent raw escape codes leaking into input.
+		return m, nil
+
+	case editorFinishedMsg:
+		m.vimMode = ModeNormal
+		m.textInput.Blur()
 		return m, nil
 
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
-		case tea.KeyEnter:
-			input := strings.TrimSpace(m.textInput.Value())
-			if input == "" {
-				return m, nil
-			}
-			m.textInput.SetValue("")
+		}
 
-			// Add user message.
-			m.messages = append(m.messages, message{
-				content: UserMsgStyle.Render("you: ") + input,
-				isUser:  true,
-			})
-
-			// Route and render.
-			result := commands.Route(input)
-
-			switch result.Type {
-			case commands.TypeQuit:
-				return m, tea.Quit
-			case commands.TypeClear:
-				m.messages = nil
-				m.viewport.SetContent(RenderWelcome(m.width))
-				m.viewport.GotoBottom()
-				return m, nil
-			default:
-				output := m.renderResult(result)
-				if output != "" {
-					m.messages = append(m.messages, message{
-						content: output,
-						isUser:  false,
-					})
-				}
-			}
-
-			m.updateViewport()
-			return m, nil
+		switch m.vimMode {
+		case ModeInsert:
+			return m.updateInsertMode(msg)
+		case ModeNormal:
+			return m.updateNormalMode(msg)
+		case ModeCommand:
+			return m.updateCommandMode(msg)
+		case ModeSearch:
+			return m.updateSearchMode(msg)
 		}
 
 	case tea.WindowSizeMsg:
@@ -138,18 +148,379 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 	}
 
-	// Update sub-components.
+	// Forward non-key messages to sub-components.
+	var cmds []tea.Cmd
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
 	cmds = append(cmds, cmd)
-
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
-// renderResult turns a command Result into styled output.
+// --- INSERT mode ---
+
+func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.vimMode = ModeNormal
+		m.normalKeyBuf = ""
+		m.textInput.Blur()
+		return m, nil
+
+	case tea.KeyEnter:
+		input := strings.TrimSpace(m.textInput.Value())
+		if input == "" {
+			return m, nil
+		}
+		m.textInput.SetValue("")
+
+		m.messages = append(m.messages, message{
+			content: UserMsgStyle.Render("you: ") + input,
+			isUser:  true,
+		})
+
+		result := commands.Route(input)
+
+		switch result.Type {
+		case commands.TypeQuit:
+			return m, tea.Quit
+		case commands.TypeClear:
+			m.messages = nil
+			m.viewport.SetContent(RenderWelcome(m.width))
+			m.viewport.GotoBottom()
+			return m, nil
+		default:
+			output := m.renderResult(result)
+			if output != "" {
+				m.messages = append(m.messages, message{
+					content: output,
+					isUser:  false,
+				})
+			}
+		}
+
+		m.updateViewport()
+		return m, nil
+	}
+
+	// Forward to textInput.
+	var cmd tea.Cmd
+	m.textInput, cmd = m.textInput.Update(msg)
+	return m, cmd
+}
+
+// --- NORMAL mode ---
+
+func (m Model) updateNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+
+	// Handle multi-key sequences.
+	if m.normalKeyBuf == "g" {
+		m.normalKeyBuf = ""
+		if key == "g" {
+			m.viewport.GotoTop()
+			return m, nil
+		}
+		// Not a recognized sequence, fall through.
+	}
+
+	switch msg.Type {
+	case tea.KeyCtrlD:
+		m.viewport.HalfViewDown()
+		return m, nil
+	case tea.KeyCtrlU:
+		m.viewport.HalfViewUp()
+		return m, nil
+	}
+
+	switch key {
+	// Navigation.
+	case "j":
+		m.viewport.LineDown(1)
+		return m, nil
+	case "k":
+		m.viewport.LineUp(1)
+		return m, nil
+	case "d":
+		m.viewport.HalfViewDown()
+		return m, nil
+	case "u":
+		m.viewport.HalfViewUp()
+		return m, nil
+	case "G":
+		m.viewport.GotoBottom()
+		return m, nil
+	case "g":
+		m.normalKeyBuf = "g"
+		return m, nil
+
+	// Mode switches.
+	case "i":
+		m.vimMode = ModeInsert
+		m.textInput.Focus()
+		return m, textinput.Blink
+	case "a":
+		m.vimMode = ModeInsert
+		m.textInput.Focus()
+		// Append after current cursor position (don't move to end).
+		return m, textinput.Blink
+	case "A":
+		m.vimMode = ModeInsert
+		m.textInput.Focus()
+		m.textInput.CursorEnd()
+		return m, textinput.Blink
+	case "I":
+		m.vimMode = ModeInsert
+		m.textInput.SetValue("")
+		m.textInput.Focus()
+		return m, textinput.Blink
+	case "o":
+		m.vimMode = ModeInsert
+		m.textInput.SetValue("")
+		m.textInput.Focus()
+		return m, textinput.Blink
+
+	// Command mode.
+	case ":":
+		m.vimMode = ModeCommand
+		m.commandBuffer = ""
+		m.normalKeyBuf = ""
+		return m, nil
+
+	// Search mode.
+	case "/":
+		m.vimMode = ModeSearch
+		m.searchBuffer = ""
+		m.normalKeyBuf = ""
+		return m, nil
+
+	// Quit.
+	case "q":
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
+// --- COMMAND mode ---
+
+func (m Model) updateCommandMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.vimMode = ModeNormal
+		m.commandBuffer = ""
+		return m, nil
+
+	case tea.KeyEnter:
+		cmd := strings.TrimSpace(m.commandBuffer)
+		m.commandBuffer = ""
+		m.vimMode = ModeNormal
+		return m.executeVimCommand(cmd)
+
+	case tea.KeyBackspace:
+		if len(m.commandBuffer) > 0 {
+			m.commandBuffer = m.commandBuffer[:len(m.commandBuffer)-1]
+		} else {
+			// Empty buffer + backspace exits command mode (like vim).
+			m.vimMode = ModeNormal
+		}
+		return m, nil
+	}
+
+	// Append printable characters.
+	if msg.Type == tea.KeyRunes {
+		m.commandBuffer += msg.String()
+	} else if msg.Type == tea.KeySpace {
+		m.commandBuffer += " "
+	}
+
+	return m, nil
+}
+
+// executeVimCommand handles : commands.
+func (m Model) executeVimCommand(cmd string) (tea.Model, tea.Cmd) {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return m, nil
+	}
+
+	base := parts[0]
+	args := parts[1:]
+
+	switch base {
+	case "q", "q!":
+		return m, tea.Quit
+	case "wq":
+		return m, tea.Quit
+	case "w":
+		m.addBotMessage(DimStyle.Render("  Nothing to save."))
+		m.updateViewport()
+		return m, nil
+
+	case "help":
+		m.addBotMessage(RenderHelp())
+		m.updateViewport()
+		return m, nil
+
+	case "man":
+		if len(args) > 0 {
+			m.addBotMessage(RenderManPage(args[0]))
+		} else {
+			m.addBotMessage(RenderManIndex())
+		}
+		m.updateViewport()
+		return m, nil
+
+	case "e":
+		if len(args) == 0 {
+			m.addBotMessage(ErrorStyle.Render("  Usage: ") + CommandStyle.Render(":e <file>"))
+			m.updateViewport()
+			return m, nil
+		}
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vim"
+		}
+		c := exec.Command(editor, args[0])
+		return m, tea.ExecProcess(c, func(err error) tea.Msg {
+			return editorFinishedMsg{err}
+		})
+
+	case "set":
+		if len(args) == 0 {
+			m.addBotMessage(ErrorStyle.Render("  Usage: ") + CommandStyle.Render(":set key=value"))
+			m.updateViewport()
+			return m, nil
+		}
+		kv := strings.SplitN(args[0], "=", 2)
+		if len(kv) != 2 {
+			m.addBotMessage(ErrorStyle.Render("  Usage: ") + CommandStyle.Render(":set key=value"))
+			m.updateViewport()
+			return m, nil
+		}
+		output := m.handleConfig([]string{"set", kv[0], kv[1]})
+		m.addBotMessage(output)
+		m.updateViewport()
+		return m, nil
+
+	case "clear":
+		m.messages = nil
+		m.viewport.SetContent(RenderWelcome(m.width))
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case "status":
+		result := commands.Route("/status")
+		output := m.renderResult(result)
+		if output != "" {
+			m.addBotMessage(output)
+		}
+		m.updateViewport()
+		return m, nil
+
+	case "run":
+		if len(args) == 0 {
+			m.addBotMessage(ErrorStyle.Render("  Usage: ") + CommandStyle.Render(":run <workflow-name>"))
+			m.updateViewport()
+			return m, nil
+		}
+		output := m.handleWorkflow([]string{"run", args[0]})
+		m.addBotMessage(output)
+		m.updateViewport()
+		return m, nil
+
+	case "logs":
+		if len(args) == 0 {
+			m.addBotMessage(ErrorStyle.Render("  Usage: ") + CommandStyle.Render(":logs <workflow-name>"))
+			m.updateViewport()
+			return m, nil
+		}
+		output := m.handleLogs(args)
+		m.addBotMessage(output)
+		m.updateViewport()
+		return m, nil
+
+	case "cred":
+		output := m.handleCredential(args)
+		m.addBotMessage(output)
+		m.updateViewport()
+		return m, nil
+
+	case "wf":
+		output := m.handleWorkflow(args)
+		m.addBotMessage(output)
+		m.updateViewport()
+		return m, nil
+
+	default:
+		m.addBotMessage(ErrorStyle.Render("  Unknown command: ") + ":" + cmd)
+		m.updateViewport()
+		return m, nil
+	}
+}
+
+// --- SEARCH mode ---
+
+func (m Model) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		m.vimMode = ModeNormal
+		m.searchBuffer = ""
+		return m, nil
+
+	case tea.KeyEnter:
+		m.searchPattern = m.searchBuffer
+		m.searchBuffer = ""
+		m.vimMode = ModeNormal
+		m.executeSearch()
+		return m, nil
+
+	case tea.KeyBackspace:
+		if len(m.searchBuffer) > 0 {
+			m.searchBuffer = m.searchBuffer[:len(m.searchBuffer)-1]
+		} else {
+			// Empty buffer + backspace exits search mode (like vim).
+			m.vimMode = ModeNormal
+		}
+		return m, nil
+	}
+
+	if msg.Type == tea.KeyRunes {
+		m.searchBuffer += msg.String()
+	} else if msg.Type == tea.KeySpace {
+		m.searchBuffer += " "
+	}
+
+	return m, nil
+}
+
+func (m *Model) executeSearch() {
+	if m.searchPattern == "" {
+		return
+	}
+	pattern := strings.ToLower(m.searchPattern)
+	lines := strings.Split(m.viewContent, "\n")
+	for i, line := range lines {
+		if strings.Contains(strings.ToLower(line), pattern) {
+			m.viewport.SetYOffset(i)
+			return
+		}
+	}
+}
+
+// --- Helper: add bot message ---
+
+func (m *Model) addBotMessage(content string) {
+	m.messages = append(m.messages, message{
+		content: content,
+		isUser:  false,
+	})
+}
+
+// --- Command rendering ---
+
 func (m *Model) renderResult(r commands.Result) string {
 	switch r.Type {
 	case commands.TypeHelp:
@@ -195,6 +566,35 @@ func (m *Model) renderResult(r commands.Result) string {
 
 	case commands.TypeConfig:
 		return m.handleConfig(r.Args)
+
+	case commands.TypeCredential:
+		return m.handleCredential(r.Args)
+
+	case commands.TypeWorkflow:
+		return m.handleWorkflow(r.Args)
+
+	case commands.TypeLogs:
+		return m.handleLogs(r.Args)
+
+	case commands.TypeMan:
+		if len(r.Args) > 0 {
+			return RenderManPage(r.Args[0])
+		}
+		return RenderManIndex()
+
+	case commands.TypeWatch:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		if len(r.Args) == 0 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/watch BTC ETH SOL")
+		}
+		symbols := make([]string, len(r.Args))
+		for i, s := range r.Args {
+			symbols[i] = strings.ToUpper(s)
+		}
+		return RenderWatch(m.client, symbols, m.width)
 
 	case commands.TypeUnknown:
 		return ErrorStyle.Render("Unknown command: ") + r.Input + "\n" +
@@ -262,7 +662,6 @@ func (m *Model) handleConfig(args []string) string {
 		}
 		m.client.UpdateConfig(m.cfg)
 
-		// Rebuild agent if anthropic key changed.
 		if akKey := m.cfg.AnthropicKeyOrEnv(); akKey != "" {
 			if m.agent == nil {
 				m.agent = ai.NewAgent(m.client, akKey)
@@ -276,14 +675,174 @@ func (m *Model) handleConfig(args []string) string {
 	}
 }
 
+// handleCredential processes /credential subcommands.
+func (m *Model) handleCredential(args []string) string {
+	if len(args) == 0 {
+		return RenderCredentialList(m.credStore)
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "list":
+		return RenderCredentialList(m.credStore)
+
+	case "add":
+		if len(args) < 5 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/credential add <name> <exchange> <api_key> <api_secret>") +
+				"\n" + DimStyle.Render("  Exchanges: "+strings.Join(credential.SupportedExchanges(), ", "))
+		}
+		name := args[1]
+		exchange := strings.ToLower(args[2])
+		apiKey := args[3]
+		apiSecret := args[4]
+
+		if !credential.IsSupportedExchange(exchange) {
+			return ErrorStyle.Render("  Unsupported exchange: ") + exchange +
+				"\n" + DimStyle.Render("  Supported: "+strings.Join(credential.SupportedExchanges(), ", "))
+		}
+
+		m.credStore.Add(credential.Credential{
+			Name:      name,
+			Exchange:  exchange,
+			APIKey:    apiKey,
+			APISecret: apiSecret,
+		})
+		if err := m.credStore.Save(); err != nil {
+			return ErrorStyle.Render("  Failed to save credential: ") + err.Error()
+		}
+		return RenderCredentialAdded(name, exchange)
+
+	case "remove":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/credential remove <name>")
+		}
+		name := args[1]
+		if !m.credStore.Remove(name) {
+			return ErrorStyle.Render("  Credential not found: ") + name
+		}
+		if err := m.credStore.Save(); err != nil {
+			return ErrorStyle.Render("  Failed to save: ") + err.Error()
+		}
+		return RenderCredentialRemoved(name)
+
+	default:
+		return ErrorStyle.Render("  Unknown subcommand: ") + sub +
+			"\n" + DimStyle.Render("  Usage: /credential <list|add|remove>")
+	}
+}
+
+// handleWorkflow processes /workflow subcommands.
+func (m *Model) handleWorkflow(args []string) string {
+	if len(args) == 0 {
+		return RenderWorkflowList(m.wfStore)
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "list":
+		return RenderWorkflowList(m.wfStore)
+
+	case "create":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/workflow create <path.json>")
+		}
+		w, err := m.wfStore.CreateFromFile(args[1])
+		if err != nil {
+			return ErrorStyle.Render("  Failed to create workflow: ") + err.Error()
+		}
+		if saveErr := m.wfStore.Save(); saveErr != nil {
+			return ErrorStyle.Render("  Failed to save: ") + saveErr.Error()
+		}
+		return RenderWorkflowCreated(w)
+
+	case "run":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/workflow run <name>")
+		}
+		logs, err := m.wfStore.Run(args[1])
+		if err != nil {
+			return ErrorStyle.Render("  " + err.Error())
+		}
+		if saveErr := m.wfStore.Save(); saveErr != nil {
+			return ErrorStyle.Render("  Failed to save: ") + saveErr.Error()
+		}
+		return RenderWorkflowRunning(args[1], logs)
+
+	case "stop":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/workflow stop <name>")
+		}
+		if err := m.wfStore.Stop(args[1]); err != nil {
+			return ErrorStyle.Render("  " + err.Error())
+		}
+		if saveErr := m.wfStore.Save(); saveErr != nil {
+			return ErrorStyle.Render("  Failed to save: ") + saveErr.Error()
+		}
+		return RenderWorkflowStopped(args[1])
+
+	case "show":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/workflow show <name>")
+		}
+		w := m.wfStore.Get(args[1])
+		if w == nil {
+			return ErrorStyle.Render("  Workflow not found: ") + args[1]
+		}
+		return RenderWorkflowShow(w, m.width)
+
+	case "remove":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/workflow remove <name>")
+		}
+		name := args[1]
+		if !m.wfStore.Remove(name) {
+			return ErrorStyle.Render("  Workflow not found: ") + name
+		}
+		if saveErr := m.wfStore.Save(); saveErr != nil {
+			return ErrorStyle.Render("  Failed to save: ") + saveErr.Error()
+		}
+		return RenderWorkflowRemoved(name)
+
+	case "edit":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/workflow edit <name>")
+		}
+		return DimStyle.Render("  Tip: use ") + CommandStyle.Render(":e ~/.nickai/workflows.json") +
+			DimStyle.Render(" in COMMAND mode (press Esc then :)")
+
+	default:
+		return ErrorStyle.Render("  Unknown subcommand: ") + sub +
+			"\n" + DimStyle.Render("  Usage: /workflow <list|create|run|stop|show|remove|edit>")
+	}
+}
+
+// handleLogs processes /logs command.
+func (m *Model) handleLogs(args []string) string {
+	if len(args) == 0 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/logs <workflow-name>")
+	}
+	w := m.wfStore.Get(args[0])
+	if w == nil {
+		return ErrorStyle.Render("  Workflow not found: ") + args[0]
+	}
+	return RenderLogs(w)
+}
+
 // handleTrade processes /buy and /sell commands.
-// Formats: /buy BTC 0.1 | /sell ETH 0.5 | /buy BTC 0.1 limit 65000
 func (m *Model) handleTrade(side string, args []string) string {
 	if !m.client.IsConfigured() {
 		return connectPrompt()
 	}
 
-	// Need at least symbol + quantity.
 	if len(args) < 2 {
 		return ErrorStyle.Render("  Usage: ") +
 			CommandStyle.Render(fmt.Sprintf("/%s BTC 0.1", side)) +
@@ -302,7 +861,6 @@ func (m *Model) handleTrade(side string, args []string) string {
 	orderType := "market"
 	var limitPrice float64
 
-	// Parse optional "limit <price>".
 	if len(args) >= 4 && strings.ToLower(args[2]) == "limit" {
 		orderType = "limit"
 		limitPrice, err = strconv.ParseFloat(args[3], 64)
@@ -330,7 +888,9 @@ func (m *Model) handleTrade(side string, args []string) string {
 
 func (m *Model) updateViewport() {
 	if len(m.messages) == 0 {
-		m.viewport.SetContent(RenderWelcome(m.width))
+		content := RenderWelcome(m.width)
+		m.viewContent = content
+		m.viewport.SetContent(content)
 		return
 	}
 
@@ -339,11 +899,15 @@ func (m *Model) updateViewport() {
 	parts = append(parts, welcome)
 	for _, msg := range m.messages {
 		parts = append(parts, msg.content)
-		parts = append(parts, "") // spacing between messages
+		parts = append(parts, "")
 	}
-	m.viewport.SetContent(strings.Join(parts, "\n"))
+	content := strings.Join(parts, "\n")
+	m.viewContent = content
+	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
 }
+
+// --- View ---
 
 func (m Model) View() string {
 	if !m.ready {
@@ -358,12 +922,77 @@ func (m Model) View() string {
 		Padding(0, 1).
 		Render("NickAI Terminal" + DimStyle.Render("  v0.1.0"))
 
-	inputBar := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, false, false, false).
-		BorderForeground(ColorDim).
-		Width(m.width).
-		Padding(0, 1).
-		Render(m.textInput.View())
+	inputBar := m.renderInputBar()
 
 	return topBar + "\n" + m.viewport.View() + "\n" + inputBar
+}
+
+// renderInputBar renders the bottom input area based on vim mode.
+func (m Model) renderInputBar() string {
+	var borderColor lipgloss.Color
+	var content string
+
+	switch m.vimMode {
+	case ModeInsert:
+		borderColor = ColorDim
+		badge := lipgloss.NewStyle().
+			Background(ColorSecondary).
+			Foreground(ColorWhite).
+			Bold(true).
+			Render(" INSERT ")
+		content = badge + " " + m.textInput.View()
+
+	case ModeNormal:
+		borderColor = ColorPrimary
+		badge := lipgloss.NewStyle().
+			Background(ColorPrimary).
+			Foreground(lipgloss.Color("#000000")).
+			Bold(true).
+			Render(" NORMAL ")
+
+		hints := DimStyle.Render("i") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(":insert") +
+			DimStyle.Render("  :") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("cmd") +
+			DimStyle.Render("  /") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("search") +
+			DimStyle.Render("  j/k") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(":scroll") +
+			DimStyle.Render("  q") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(":quit")
+
+		// Place badge left, hints right.
+		hintsWidth := m.width - 14 // badge + padding
+		if hintsWidth < 0 {
+			hintsWidth = 0
+		}
+		rightAligned := lipgloss.NewStyle().Width(hintsWidth).Align(lipgloss.Right).Render(hints)
+		content = badge + " " + rightAligned
+
+	case ModeCommand:
+		borderColor = ColorSecondary
+		badge := lipgloss.NewStyle().
+			Background(ColorSecondary).
+			Foreground(ColorWhite).
+			Bold(true).
+			Render(" COMMAND ")
+
+		bufferStyle := lipgloss.NewStyle().Foreground(ColorWhite)
+		content = badge + " " + bufferStyle.Render(":"+m.commandBuffer) +
+			lipgloss.NewStyle().Foreground(ColorWhite).Render("█")
+
+	case ModeSearch:
+		borderColor = ColorWarning
+		badge := lipgloss.NewStyle().
+			Background(ColorWarning).
+			Foreground(lipgloss.Color("#000000")).
+			Bold(true).
+			Render(" SEARCH ")
+
+		bufferStyle := lipgloss.NewStyle().Foreground(ColorWarning)
+		content = badge + " " + bufferStyle.Render("/"+m.searchBuffer) +
+			lipgloss.NewStyle().Foreground(ColorWarning).Render("█")
+	}
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), true, false, false, false).
+		BorderForeground(borderColor).
+		Width(m.width).
+		Padding(0, 1).
+		Render(content)
 }

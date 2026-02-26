@@ -1,10 +1,30 @@
 package ui
 
 import (
+	"math/rand"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
+
+var startupTaglines = []string{
+	"Your agents don't sleep. Neither should your portfolio.",
+	"Multi-LLM consensus. Zero human emotion.",
+	"Built different. Trades different.",
+	"The terminal is the trading floor.",
+	"Ctrl+C is the only stop-loss you need.",
+	"While you sleep, your agents compound.",
+	"Autonomous alpha, one prompt at a time.",
+	"Less panic selling. More autonomous building.",
+	"Your portfolio called. It wants an upgrade.",
+	"Agents go brrr.",
+	"Wall Street runs on coffee. NickAI runs on tokens.",
+	"Deploy an agent. Touch grass. Check back later.",
+	"No Bloomberg terminal needed. Just vibes and workflows.",
+	"Sentiment analysis at 3am so you don't have to be.",
+	"The only leverage here is AI leverage.",
+	"From /buy to Lambo. Results may vary.",
+}
 
 // RenderWelcome returns the NickAI branded welcome screen.
 func RenderWelcome(width int) string {
@@ -71,6 +91,8 @@ func RenderWelcome(width int) string {
 	inner = append(inner, styledLogo)
 	inner = append(inner, "")
 	inner = append(inner, tagline+"   "+version)
+	quip := DimStyle.Render("\"" + startupTaglines[rand.Intn(len(startupTaglines))] + "\"")
+	inner = append(inner, quip)
 	inner = append(inner, "")
 	inner = append(inner, divider)
 	inner = append(inner, "")

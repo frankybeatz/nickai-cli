@@ -20,6 +20,11 @@ const (
 	TypeConfig
 	TypeClear
 	TypeQuit
+	TypeCredential
+	TypeWorkflow
+	TypeLogs
+	TypeMan
+	TypeWatch
 	TypeUnknown
 )
 
@@ -70,6 +75,16 @@ func Route(input string) Result {
 		return Result{Type: TypeClear, Input: trimmed, Args: args, IsCommand: true}
 	case "/quit", "/exit":
 		return Result{Type: TypeQuit, Input: trimmed, Args: args, IsCommand: true}
+	case "/credential", "/cred":
+		return Result{Type: TypeCredential, Input: trimmed, Args: args, IsCommand: true}
+	case "/workflow", "/wf":
+		return Result{Type: TypeWorkflow, Input: trimmed, Args: args, IsCommand: true}
+	case "/logs", "/log":
+		return Result{Type: TypeLogs, Input: trimmed, Args: args, IsCommand: true}
+	case "/man", "/manual":
+		return Result{Type: TypeMan, Input: trimmed, Args: args, IsCommand: true}
+	case "/watch":
+		return Result{Type: TypeWatch, Input: trimmed, Args: args, IsCommand: true}
 	default:
 		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
 	}
