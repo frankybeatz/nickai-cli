@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -54,7 +55,10 @@ func (cm *ClientManager) connect(name string, cfg MCPServerConfig) (*MCPConnecti
 		return nil, fmt.Errorf("failed to start %s: %w", name, err)
 	}
 
-	ctx := context.Background()
+	// Use a timeout so a hanging server doesn't block startup forever.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{
