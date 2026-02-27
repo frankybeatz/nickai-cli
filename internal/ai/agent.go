@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nickai/cli/internal/api"
+	"github.com/nickai/cli/internal/tools"
 )
 
 const (
@@ -86,11 +87,8 @@ type toolResultBlock struct {
 	IsError   bool   `json:"is_error,omitempty"`
 }
 
-type toolDef struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
-}
+// toolDef is the Anthropic API tool wire format, aliased from the tools package.
+type toolDef = tools.AnthropicToolDef
 
 type apiRequest struct {
 	Model     string        `json:"model"`
@@ -148,90 +146,6 @@ type sseEvent struct {
 	Delta        *sseDelta        `json:"delta,omitempty"`
 }
 
-// --- Tool input types ---
-
-type getPricesInput struct {
-	Symbols []string `json:"symbols"`
-}
-
-type placeOrderInput struct {
-	Symbol   string  `json:"symbol"`
-	Side     string  `json:"side"`
-	Quantity float64 `json:"quantity"`
-	Type     string  `json:"type"`
-	Price    float64 `json:"price,omitempty"`
-}
-
-// --- Tool definitions ---
-
-var tools = []toolDef{
-	{
-		Name:        "get_prices",
-		Description: "Get current prices for cryptocurrency symbols. Returns symbol and current price.",
-		InputSchema: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"symbols": {
-					"type": "array",
-					"items": {"type": "string"},
-					"description": "List of symbol tickers, e.g. [\"BTC\", \"ETH\", \"SOL\"]"
-				}
-			},
-			"required": ["symbols"]
-		}`),
-	},
-	{
-		Name:        "get_portfolio",
-		Description: "Get the user's current portfolio including cash balance, total value, and all open positions with quantities and values.",
-		InputSchema: json.RawMessage(`{
-			"type": "object",
-			"properties": {},
-			"required": []
-		}`),
-	},
-	{
-		Name:        "get_orders",
-		Description: "Get the user's recent order history including filled, pending, and cancelled orders.",
-		InputSchema: json.RawMessage(`{
-			"type": "object",
-			"properties": {},
-			"required": []
-		}`),
-	},
-	{
-		Name:        "place_order",
-		Description: "Place a trade order. Symbol should include quote currency (e.g. BTCUSDT). For market orders, omit price. For limit orders, include price.",
-		InputSchema: json.RawMessage(`{
-			"type": "object",
-			"properties": {
-				"symbol": {
-					"type": "string",
-					"description": "Trading pair symbol, e.g. BTCUSDT, ETHUSDT"
-				},
-				"side": {
-					"type": "string",
-					"enum": ["buy", "sell"],
-					"description": "Order side"
-				},
-				"quantity": {
-					"type": "number",
-					"description": "Quantity to trade"
-				},
-				"type": {
-					"type": "string",
-					"enum": ["market", "limit"],
-					"description": "Order type"
-				},
-				"price": {
-					"type": "number",
-					"description": "Limit price (required for limit orders, omit for market)"
-				}
-			},
-			"required": ["symbol", "side", "quantity", "type"]
-		}`),
-	},
-}
-
 // --- Agent ---
 
 // Agent manages conversation with an LLM and executes tools against PaperNick.
@@ -242,18 +156,21 @@ type Agent struct {
 	provider Provider
 	history  []chatMessage
 	http     *http.Client
+	registry *tools.Registry
 
 	// MiniMax key (separate from Anthropic).
 	minimaxKey string
 }
 
-// NewAgent creates an agent with the given PaperNick client and Anthropic API key.
-func NewAgent(client *api.PapernickClient, anthropicKey string) *Agent {
+// NewAgent creates an agent with the given PaperNick client, Anthropic API key,
+// and tool registry.
+func NewAgent(client *api.PapernickClient, anthropicKey string, registry *tools.Registry) *Agent {
 	return &Agent{
 		client:   client,
 		apiKey:   anthropicKey,
 		modelID:  "claude-sonnet",
 		provider: ProviderAnthropic,
+		registry: registry,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -340,7 +257,7 @@ func (a *Agent) chatAnthropic(userMessage string) (string, error) {
 
 		var results []toolResultBlock
 		for _, tu := range toolUses {
-			result := a.executeTool(tu.Name, tu.Input)
+			result := a.registry.ExecuteTool(tu.Name, tu.Input)
 			results = append(results, toolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: tu.ID,
@@ -437,7 +354,7 @@ func (a *Agent) callAnthropic() (*apiResponse, error) {
 		Model:     modelAPIName(a.modelID),
 		MaxTokens: maxTokens,
 		System:    systemPrompt,
-		Tools:     tools,
+		Tools:     a.registry.ToAnthropicTools(),
 		Messages:  a.history,
 	}
 
@@ -499,62 +416,6 @@ func (a *Agent) callAnthropic() (*apiResponse, error) {
 	return nil, lastErr
 }
 
-// executeTool dispatches a tool call to the PaperNick client and returns JSON.
-func (a *Agent) executeTool(name string, rawInput json.RawMessage) string {
-	switch name {
-	case "get_prices":
-		var input getPricesInput
-		if err := json.Unmarshal(rawInput, &input); err != nil {
-			return errorJSON("invalid input: " + err.Error())
-		}
-		prices, err := a.client.GetPrices(input.Symbols)
-		if err != nil {
-			return errorJSON(err.Error())
-		}
-		return toJSON(prices)
-
-	case "get_portfolio":
-		portfolio, err := a.client.GetPortfolio()
-		if err != nil {
-			return errorJSON(err.Error())
-		}
-		return toJSON(portfolio)
-
-	case "get_orders":
-		orders, err := a.client.GetOrders()
-		if err != nil {
-			return errorJSON(err.Error())
-		}
-		return toJSON(orders)
-
-	case "place_order":
-		var input placeOrderInput
-		if err := json.Unmarshal(rawInput, &input); err != nil {
-			return errorJSON("invalid input: " + err.Error())
-		}
-		// Normalize symbol — append USDT if no quote currency.
-		symbol := strings.ToUpper(input.Symbol)
-		if !strings.HasSuffix(symbol, "USDT") &&
-			!strings.HasSuffix(symbol, "USDC") &&
-			!strings.HasSuffix(symbol, "USD") {
-			symbol += "USDT"
-		}
-		order, err := a.client.PlaceOrder(api.PlaceOrderRequest{
-			Symbol:   symbol,
-			Side:     input.Side,
-			Quantity: input.Quantity,
-			Type:     input.Type,
-			Price:    input.Price,
-		})
-		if err != nil {
-			return errorJSON(err.Error())
-		}
-		return toJSON(order)
-
-	default:
-		return errorJSON("unknown tool: " + name)
-	}
-}
 
 // extractText concatenates all text blocks from a response.
 func extractText(blocks []contentBlock) string {
@@ -567,17 +428,6 @@ func extractText(blocks []contentBlock) string {
 	return strings.Join(parts, "\n")
 }
 
-func toJSON(v any) string {
-	data, err := json.Marshal(v)
-	if err != nil {
-		return errorJSON(err.Error())
-	}
-	return string(data)
-}
-
-func errorJSON(msg string) string {
-	return fmt.Sprintf(`{"error": %q}`, msg)
-}
 
 // --- Streaming ---
 
@@ -623,7 +473,7 @@ func (a *Agent) ChatStream(userMessage string, tokenCh chan<- string) (string, e
 
 		var results []toolResultBlock
 		for _, tu := range toolUses {
-			result := a.executeTool(tu.Name, tu.Input)
+			result := a.registry.ExecuteTool(tu.Name, tu.Input)
 			results = append(results, toolResultBlock{
 				Type:      "tool_result",
 				ToolUseID: tu.ID,
@@ -667,7 +517,7 @@ func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error)
 		Model:     modelAPIName(a.modelID),
 		MaxTokens: maxTokens,
 		System:    systemPrompt,
-		Tools:     tools,
+		Tools:     a.registry.ToAnthropicTools(),
 		Messages:  a.history,
 		Stream:    true,
 	}

@@ -5,6 +5,8 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/nickai/cli/internal/config"
+	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/ui"
 )
 
@@ -20,7 +22,10 @@ func main() {
 		case "--help", "-h", "help":
 			fmt.Println("NickAI CLI — Conversational trading terminal")
 			fmt.Println()
-			fmt.Printf("  Usage: nickai [flags]\n\n")
+			fmt.Printf("  Usage: nickai [command] [flags]\n\n")
+			fmt.Println("  Commands:")
+			fmt.Println("    mcp serve        Start MCP server (for Claude Desktop / Cursor / VS Code)")
+			fmt.Println()
 			fmt.Println("  Flags:")
 			fmt.Println("    --help, -h       Show this help message")
 			fmt.Println("    --version, -v    Print version")
@@ -33,6 +38,21 @@ func main() {
 			fmt.Println()
 			fmt.Printf("  v%s  |  https://github.com/frankybeatz/nickai-cli\n", version)
 			return
+		case "mcp":
+			if len(os.Args) > 2 && os.Args[2] == "serve" {
+				cfg, err := config.Load()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Config error: %v\n", err)
+					os.Exit(1)
+				}
+				if err := mcp.ServeStdio(cfg, version); err != nil {
+					fmt.Fprintf(os.Stderr, "MCP server error: %v\n", err)
+					os.Exit(1)
+				}
+				return
+			}
+			fmt.Fprintln(os.Stderr, "Usage: nickai mcp serve")
+			os.Exit(1)
 		}
 	}
 

@@ -19,6 +19,8 @@ import (
 	"github.com/nickai/cli/internal/commands"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/mcp"
+	"github.com/nickai/cli/internal/tools"
 	"github.com/nickai/cli/internal/workflow"
 )
 
@@ -186,11 +188,13 @@ type Model struct {
 	dialog DialogState
 
 	// Data stores.
-	cfg       *config.Config
-	client    *api.PapernickClient
-	agent     *ai.Agent
-	credStore *credential.Store
-	wfStore   *workflow.Store
+	cfg          *config.Config
+	client       *api.PapernickClient
+	agent        *ai.Agent
+	toolRegistry *tools.Registry
+	mcpManager   *mcp.ClientManager
+	credStore    *credential.Store
+	wfStore      *workflow.Store
 }
 
 // New creates the initial model, loading config from disk.
@@ -208,11 +212,23 @@ func New() Model {
 	cfg, _ := config.Load()
 	client := api.NewClient(cfg)
 
+	// Create tool registry and register built-in trading tools.
+	registry := tools.NewRegistry()
+	tools.RegisterBuiltins(registry, client)
+
+	// Connect to external MCP servers (if configured in ~/.nickai/mcp.json).
+	var mcpMgr *mcp.ClientManager
+	if mcpCfg, err := mcp.LoadMCPConfig(); err == nil && len(mcpCfg.MCPServers) > 0 {
+		mcpMgr = mcp.NewClientManager()
+		mcpMgr.ConnectAll(mcpCfg)
+		mcpMgr.RegisterTools(registry)
+	}
+
 	var agent *ai.Agent
 	anthKey := cfg.AnthropicKeyOrEnv()
 	mmKey := cfg.MinimaxKeyOrEnv()
 	if anthKey != "" || mmKey != "" {
-		agent = ai.NewAgent(client, anthKey)
+		agent = ai.NewAgent(client, anthKey, registry)
 		if mmKey != "" {
 			agent.SetMinimaxKey(mmKey)
 		}
@@ -243,12 +259,22 @@ func New() Model {
 		bootStartTime: time.Now(),
 		historyIndex:  -1,
 		inputHistory:  inputHistory,
-		cfg:           cfg,
-		client:        client,
-		agent:         agent,
-		credStore:     credStore,
-		wfStore:       wfStore,
+		cfg:          cfg,
+		client:       client,
+		agent:        agent,
+		toolRegistry: registry,
+		mcpManager:   mcpMgr,
+		credStore:    credStore,
+		wfStore:      wfStore,
 	}
+}
+
+// cleanup shuts down MCP connections and saves history.
+func (m Model) cleanup() {
+	if m.mcpManager != nil {
+		m.mcpManager.CloseAll()
+	}
+	saveInputHistory(m.inputHistory)
 }
 
 func (m Model) Init() tea.Cmd {
@@ -463,7 +489,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
-			saveInputHistory(m.inputHistory)
+			m.cleanup()
 			return m, tea.Quit
 		}
 		// Ignore key input during boot animation.
@@ -630,7 +656,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		switch result.Type {
 		case commands.TypeQuit:
-			saveInputHistory(m.inputHistory)
+			m.cleanup()
 			return m, tea.Quit
 		case commands.TypeClear:
 			m.messages = nil
@@ -835,7 +861,7 @@ func (m Model) updateNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Quit.
 	case "q":
-		saveInputHistory(m.inputHistory)
+		m.cleanup()
 		return m, tea.Quit
 	}
 
@@ -889,10 +915,10 @@ func (m Model) executeVimCommand(cmd string) (tea.Model, tea.Cmd) {
 
 	switch base {
 	case "q", "q!":
-		saveInputHistory(m.inputHistory)
+		m.cleanup()
 		return m, tea.Quit
 	case "wq":
-		saveInputHistory(m.inputHistory)
+		m.cleanup()
 		return m, tea.Quit
 	case "w":
 		m.addBotMessage(DimStyle.Render("  Nothing to save."))
@@ -1673,12 +1699,12 @@ func (m *Model) handleConfig(args []string) string {
 
 		if akKey := m.cfg.AnthropicKeyOrEnv(); akKey != "" {
 			if m.agent == nil {
-				m.agent = ai.NewAgent(m.client, akKey)
+				m.agent = ai.NewAgent(m.client, akKey, m.toolRegistry)
 			}
 		}
 		if mmKey := m.cfg.MinimaxKeyOrEnv(); mmKey != "" {
 			if m.agent == nil {
-				m.agent = ai.NewAgent(m.client, "")
+				m.agent = ai.NewAgent(m.client, "", m.toolRegistry)
 			}
 			m.agent.SetMinimaxKey(mmKey)
 		}
@@ -1982,9 +2008,9 @@ func (m *Model) handleModel(args []string) string {
 				CommandStyle.Render("/config set minimax_key <key>")
 		}
 		if anthKey != "" {
-			m.agent = ai.NewAgent(m.client, anthKey)
+			m.agent = ai.NewAgent(m.client, anthKey, m.toolRegistry)
 		} else {
-			m.agent = ai.NewAgent(m.client, "")
+			m.agent = ai.NewAgent(m.client, "", m.toolRegistry)
 		}
 		if mmKey != "" {
 			m.agent.SetMinimaxKey(mmKey)
