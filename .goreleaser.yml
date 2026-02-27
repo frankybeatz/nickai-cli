@@ -38,6 +38,7 @@ brews:
   - repository:
       owner: frankybeatz
       name: homebrew-nickai
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://github.com/frankybeatz/nickai-cli
     description: Conversational trading terminal for autonomous finance
     license: MIT
