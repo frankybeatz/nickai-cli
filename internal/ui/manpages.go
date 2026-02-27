@@ -303,6 +303,86 @@ Requires a configured API key.`,
 		examples: []string{"/history", "/journal"},
 		seeAlso:  []string{"orders", "pnl", "status"},
 	},
+	"chart": {
+		name:     "chart - ASCII sparkline chart",
+		synopsis: "/chart <SYMBOL>",
+		desc: `Display a sparkline chart for a cryptocurrency symbol. Fetches
+the current price and generates a simulated 50-point price
+history to render a visual sparkline using block characters.
+
+Shows current price, high/low range, and trend direction
+(green for up, red for down).
+
+Requires a configured API key.`,
+		examples: []string{"/chart BTC", "/chart ETH", "/chart SOL"},
+		seeAlso:  []string{"price", "watch", "market"},
+	},
+	"alert": {
+		name:     "alert - set price alerts",
+		synopsis: "/alert <SYMBOL> <> | <>> <PRICE>",
+		desc: `Set a background price alert that triggers when a symbol
+crosses a target price. Alerts are checked every 30 seconds.
+
+When triggered, a styled notification appears in chat with
+a terminal bell.
+
+Subcommands:
+  list       Show all active alerts
+  clear      Remove all alerts
+
+Operators: > (above), < (below).`,
+		examples: []string{
+			"/alert BTC > 100000",
+			"/alert ETH < 2000",
+			"/alert list",
+			"/alert clear",
+		},
+		seeAlso: []string{"price", "watch", "chart"},
+	},
+	"model": {
+		name:     "model - switch AI model",
+		synopsis: "/model [id]",
+		desc: `Switch the AI language model used for chat. When called without
+arguments, shows all available models with the current selection.
+
+Available models:
+  claude-sonnet    Claude Sonnet 4 (Anthropic, requires API key)
+  claude-haiku     Claude Haiku 4.5 (Anthropic, requires API key)
+  minimax          MiniMax abab6.5s (free tier, requires API key)
+
+Model preference is saved to config and persists across sessions.
+Switching models clears conversation history.
+
+Alias: /models`,
+		examples: []string{
+			"/model",
+			"/model claude-haiku",
+			"/model minimax",
+		},
+		seeAlso: []string{"config"},
+	},
+	"theme": {
+		name:     "theme - switch color theme",
+		synopsis: "/theme [name]",
+		desc: `Switch the terminal color scheme. When called without arguments,
+shows all available themes with the current selection marked.
+
+Available themes:
+  default     NickAI brand colors (green/purple)
+  cyberpunk   Neon magenta and cyan
+  bloomberg   Orange terminal style
+  minimal     Muted grayscale
+  matrix      Green-on-black hacker aesthetic
+
+Theme preference is saved to config and persists across sessions.`,
+		examples: []string{
+			"/theme",
+			"/theme cyberpunk",
+			"/theme bloomberg",
+			"/theme default",
+		},
+		seeAlso: []string{"config"},
+	},
 	"watch": {
 		name:     "watch - live price monitor",
 		synopsis: "/watch <SYMBOL> [SYMBOL...]",
@@ -341,6 +421,8 @@ func RenderManPage(command string) string {
 		command = "snapshot"
 	case "journal":
 		command = "history"
+	case "models":
+		command = "model"
 	}
 
 	page, ok := manPages[command]
@@ -416,6 +498,10 @@ func RenderManIndex() string {
 		{"market", "Full market overview"},
 		{"pnl", "Profit and loss summary"},
 		{"history", "Trade journal"},
+		{"chart", "ASCII sparkline chart"},
+		{"alert", "Set price alerts"},
+		{"model", "Switch AI model"},
+		{"theme", "Switch color theme"},
 		{"config", "Manage configuration"},
 		{"credential", "Manage exchange API keys"},
 		{"workflow", "Manage automation workflows"},

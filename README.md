@@ -2,8 +2,7 @@
 
 Conversational trading terminal for [NickAI](https://getnick.ai). Paper trade, deploy agents, and manage workflows — all from your terminal.
 
-![screenshot](docs/screenshot.png)
-<!-- TODO: add actual screenshot -->
+![demo](demo.gif)
 
 ## Install
 
@@ -14,8 +13,14 @@ go run .
 Or build the binary:
 
 ```bash
-go build -o nickai .
+make build
 ./nickai
+```
+
+Pre-built binaries for macOS, Linux, and Windows:
+
+```bash
+make release    # builds all platforms to build/
 ```
 
 Requires Go 1.23+.
@@ -25,16 +30,34 @@ Requires Go 1.23+.
 ```
 /config set api_key <your-papernick-api-key>
 /config set anthropic_key <your-anthropic-api-key>
+/config set minimax_key <your-minimax-key>    # free model
 /config test
 ```
 
-Or set the Anthropic key via environment:
+Or set keys via environment:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export MINIMAX_API_KEY=...
 ```
 
 Config is stored at `~/.nickai/config.json`.
+
+## AI Models
+
+Switch between AI providers with `/model`:
+
+| Model | Provider | Free |
+|---|---|---|
+| `claude-sonnet` | Anthropic | No |
+| `claude-haiku` | Anthropic | No |
+| `minimax` | MiniMax | Yes |
+
+## Themes
+
+10 built-in themes — switch with `/theme <name>`:
+
+`default` `cyberpunk` `bloomberg` `minimal` `matrix` `tokyonight` `dracula` `catppuccin` `nord` `gruvbox`
 
 ## Commands
 
@@ -57,6 +80,10 @@ Config is stored at `~/.nickai/config.json`.
 | `/credential list` | Manage exchange API keys |
 | `/logs <workflow>` | Workflow execution logs |
 | `/man <command>` | Detailed manual page |
+| `/chart BTC` | ASCII sparkline chart |
+| `/alert BTC > 100000` | Set a price alert |
+| `/model` | Switch AI model |
+| `/theme` | Switch color theme |
 | `/config` | Manage API keys & connection |
 | `/clear` | Clear chat |
 | `/quit` | Exit |
@@ -73,8 +100,18 @@ The terminal supports modal editing. Press `Esc` to enter NORMAL mode.
 | **NORMAL** | `Esc` | `j`/`k` scroll, `gg`/`G` jump, `d`/`u` half-page, `q` quit |
 | **COMMAND** | `:` | `:q` `:help` `:man buy` `:e file` `:set key=value` `:wf list` `:cred list` |
 | **SEARCH** | `/` | `/pattern` then Enter to jump to first match |
+| **CONFIRM** | automatic | `y` confirm, `n` cancel (trade execution) |
 
-Mode indicator badge and border color change per mode.
+Mode indicator badge and border color change per mode. Tab completes commands and symbols. Up/Down arrow cycles command history.
+
+### Overlay Dialogs
+
+| Shortcut | Dialog |
+|---|---|
+| `Ctrl+K` | Command palette — fuzzy search all commands |
+| `Ctrl+T` | Theme picker with color swatches |
+| `Ctrl+O` | Model selector (switch LLM provider) |
+| `?` (normal mode) | Help overlay — 3-column keybinding reference |
 
 ## Workflows
 
@@ -104,3 +141,4 @@ See [SECURITY.md](SECURITY.md) for the full security policy and audit details.
 - [Lipgloss](https://github.com/charmbracelet/lipgloss) — Styling
 - [PaperNick API](https://paper.getnick.ai) — Paper trading
 - [Anthropic Claude](https://anthropic.com) — AI agent with tool use
+- [MiniMax](https://www.minimaxi.com) — Free LLM option

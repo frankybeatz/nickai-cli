@@ -13,6 +13,9 @@ type Config struct {
 	APIKey       string `json:"api_key,omitempty"`
 	BaseURL      string `json:"base_url,omitempty"`
 	AnthropicKey string `json:"anthropic_key,omitempty"`
+	MinimaxKey   string `json:"minimax_key,omitempty"`
+	Theme        string `json:"theme,omitempty"`
+	Model        string `json:"model,omitempty"`
 }
 
 // configPath returns ~/.nickai/config.json.
@@ -92,6 +95,15 @@ func (c *Config) AnthropicKeyOrEnv() string {
 		return c.AnthropicKey
 	}
 	return os.Getenv("ANTHROPIC_API_KEY")
+}
+
+// MinimaxKeyOrEnv returns the MiniMax key from config, falling back to
+// the MINIMAX_API_KEY environment variable.
+func (c *Config) MinimaxKeyOrEnv() string {
+	if c.MinimaxKey != "" {
+		return c.MinimaxKey
+	}
+	return os.Getenv("MINIMAX_API_KEY")
 }
 
 func maskKey(k string) string {

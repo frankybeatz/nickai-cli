@@ -29,6 +29,10 @@ const (
 	TypeMarket
 	TypePnl
 	TypeHistory
+	TypeAlert
+	TypeChart
+	TypeTheme
+	TypeModel
 	TypeUnknown
 )
 
@@ -97,6 +101,14 @@ func Route(input string) Result {
 		return Result{Type: TypePnl, Input: trimmed, Args: args, IsCommand: true}
 	case "/history", "/journal":
 		return Result{Type: TypeHistory, Input: trimmed, Args: args, IsCommand: true}
+	case "/alert":
+		return Result{Type: TypeAlert, Input: trimmed, Args: args, IsCommand: true}
+	case "/chart":
+		return Result{Type: TypeChart, Input: trimmed, Args: args, IsCommand: true}
+	case "/theme":
+		return Result{Type: TypeTheme, Input: trimmed, Args: args, IsCommand: true}
+	case "/model", "/models":
+		return Result{Type: TypeModel, Input: trimmed, Args: args, IsCommand: true}
 	default:
 		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
 	}

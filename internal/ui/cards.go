@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"math"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -990,6 +991,149 @@ func RenderHistory(client *api.PapernickClient, width int) string {
 	return SecondaryStyle.Render("  Trade Journal") + "\n" + box
 }
 
+// --- /chart: sparkline chart ---
+
+// RenderChart renders a braille sparkline chart for a symbol.
+func RenderChart(client *api.PapernickClient, symbol string, width int) string {
+	cardWidth := min(width-4, 64)
+
+	prices, err := client.GetPrices([]string{symbol})
+	if err != nil {
+		return ErrorStyle.Render("  Failed to fetch price: ") + err.Error()
+	}
+	if len(prices) == 0 {
+		return DimStyle.Render("  No price data for: ") + symbol
+	}
+
+	currentPrice := prices[0].Price
+	data := generateSparklineData(currentPrice, 50)
+	sparkline := renderSparkline(data, cardWidth-8)
+
+	// Calculate simulated high/low from the data.
+	high, low := data[0], data[0]
+	for _, v := range data {
+		if v > high {
+			high = v
+		}
+		if v < low {
+			low = v
+		}
+	}
+
+	var lines []string
+	lines = append(lines, "")
+	lines = append(lines, BrandStyle.Render(prices[0].Symbol)+"  "+
+		lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(formatPrice(currentPrice)))
+	lines = append(lines, "")
+	lines = append(lines, sparkline)
+	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render("H ")+formatPrice(high)+
+		DimStyle.Render("  L ")+formatPrice(low)+
+		DimStyle.Render("  |  50 points"))
+	lines = append(lines, "")
+
+	content := strings.Join(lines, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Padding(0, 2).
+		Width(cardWidth).
+		Render(content)
+
+	return SecondaryStyle.Render("  Sparkline Chart") + "\n" + box
+}
+
+// generateSparklineData produces a random walk of n points ending at basePrice.
+func generateSparklineData(basePrice float64, n int) []float64 {
+	data := make([]float64, n)
+	data[n-1] = basePrice
+	volatility := basePrice * 0.003
+	for i := n - 2; i >= 0; i-- {
+		delta := (rand.Float64()*2 - 1) * volatility
+		data[i] = data[i+1] + delta
+	}
+	return data
+}
+
+// renderSparkline renders data as braille block characters.
+func renderSparkline(data []float64, barWidth int) string {
+	if len(data) == 0 || barWidth <= 0 {
+		return ""
+	}
+
+	minVal, maxVal := data[0], data[0]
+	for _, v := range data {
+		if v < minVal {
+			minVal = v
+		}
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+
+	blocks := []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+	span := maxVal - minVal
+	if span == 0 {
+		span = 1
+	}
+
+	var result []rune
+	for i := 0; i < barWidth && i < len(data); i++ {
+		idx := i * len(data) / barWidth
+		normalized := (data[idx] - minVal) / span
+		blockIdx := int(normalized * float64(len(blocks)-1))
+		if blockIdx >= len(blocks) {
+			blockIdx = len(blocks) - 1
+		}
+		if blockIdx < 0 {
+			blockIdx = 0
+		}
+		result = append(result, blocks[blockIdx])
+	}
+
+	style := lipgloss.NewStyle().Foreground(ColorPrimary)
+	if data[len(data)-1] < data[0] {
+		style = lipgloss.NewStyle().Foreground(ColorError)
+	}
+
+	return style.Render(string(result))
+}
+
+// --- Trade confirmation card ---
+
+// RenderTradeConfirmCard renders a styled confirmation card for a pending trade.
+func RenderTradeConfirmCard(req *api.PlaceOrderRequest, width int) string {
+	cardWidth := min(width-4, 64)
+
+	sideColor := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
+	if req.Side == "sell" {
+		sideColor = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
+	}
+
+	var lines []string
+	lines = append(lines, "")
+	lines = append(lines, sideColor.Render(strings.ToUpper(req.Side))+" "+BrandStyle.Render(req.Symbol))
+	lines = append(lines, DimStyle.Render("Quantity:  ")+fmt.Sprintf("%.4f", req.Quantity))
+	lines = append(lines, DimStyle.Render("Type:      ")+req.Type)
+	if req.Price > 0 {
+		lines = append(lines, DimStyle.Render("Price:     ")+formatPrice(req.Price))
+	}
+	lines = append(lines, "")
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorWarning).Bold(true).
+		Render("Press y to confirm, n to cancel"))
+	lines = append(lines, "")
+
+	content := strings.Join(lines, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorWarning).
+		Padding(0, 1).
+		Width(cardWidth).
+		Render(content)
+
+	return WarningStyle.Render("  CONFIRM TRADE") + "\n" + box
+}
+
 // --- /help ---
 
 func RenderHelp() string {
@@ -1010,10 +1154,14 @@ func RenderHelp() string {
 		{"/market", "Full market overview (10 assets)"},
 		{"/pnl", "Profit & loss summary"},
 		{"/history", "Trade journal with all orders"},
+		{"/chart BTC", "ASCII sparkline chart"},
+		{"/alert BTC > 100000", "Set a price alert"},
 		{"/credential list", "Manage exchange API keys"},
 		{"/workflow list", "Manage automation workflows"},
 		{"/logs <workflow>", "Workflow execution logs"},
 		{"/man <command>", "Detailed manual pages"},
+		{"/model <id>", "Switch AI model"},
+		{"/theme <name>", "Switch color theme"},
 		{"/config", "Manage API key & connection"},
 		{"/clear", "Clear chat history"},
 		{"/quit", "Exit NickAI"},

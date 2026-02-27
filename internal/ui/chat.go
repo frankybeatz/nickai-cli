@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os"
@@ -29,7 +30,26 @@ const (
 	ModeNormal                 // vim normal mode — navigation
 	ModeCommand                // : command line
 	ModeSearch                 // / search
+	ModeConfirm                // trade confirmation prompt
 )
+
+// Tab completion data.
+var knownCommands = []string{
+	"/help", "/status", "/orders", "/agents", "/templates",
+	"/buy", "/sell", "/price", "/watch", "/snapshot",
+	"/market", "/pnl", "/history", "/credential", "/workflow",
+	"/logs", "/man", "/config", "/clear", "/quit",
+	"/alert", "/chart", "/theme", "/model",
+}
+
+var knownSymbols = []string{
+	"BTC", "ETH", "SOL", "DOGE", "ADA", "AVAX", "LINK", "DOT", "XRP",
+}
+
+var symbolCommands = map[string]bool{
+	"/price": true, "/buy": true, "/sell": true,
+	"/watch": true, "/chart": true, "/alert": true,
+}
 
 // editorFinishedMsg is sent when an external editor process completes.
 type editorFinishedMsg struct{ err error }
@@ -49,6 +69,32 @@ type aiResponseMsg struct {
 // apiResponseMsg carries the result of an async API command.
 type apiResponseMsg struct {
 	content string
+}
+
+// priceAlert represents a background price alert.
+type priceAlert struct {
+	symbol   string
+	operator string // ">" or "<"
+	target   float64
+}
+
+// alertCheckMsg triggers a periodic alert check.
+type alertCheckMsg struct{}
+
+// alertTriggeredMsg is sent when an alert fires.
+type alertTriggeredMsg struct {
+	symbol       string
+	currentPrice float64
+	operator     string
+	target       float64
+}
+
+// tickerFetchMsg signals time to fetch new ticker data.
+type tickerFetchMsg struct{}
+
+// tickerUpdateMsg carries refreshed ticker prices.
+type tickerUpdateMsg struct {
+	prices []api.Price
 }
 
 // Braille spinner frames.
@@ -101,6 +147,29 @@ type Model struct {
 	loadingFrame int
 	loadingText  string
 
+	// Tab completion state.
+	completionCandidates []string
+	completionIndex      int
+
+	// Command history (up/down arrow).
+	inputHistory []string
+	historyIndex int // -1 means not browsing history
+	historySaved string // saves current input when browsing
+
+	// Alert state.
+	alerts       []priceAlert
+	alertTicking bool
+
+	// Ticker bar state.
+	tickerPrices  []api.Price
+	tickerTicking bool
+
+	// Trade confirmation state.
+	pendingTrade *api.PlaceOrderRequest
+
+	// Overlay dialog state.
+	dialog DialogState
+
 	// Data stores.
 	cfg       *config.Config
 	client    *api.PapernickClient
@@ -125,12 +194,30 @@ func New() Model {
 	client := api.NewClient(cfg)
 
 	var agent *ai.Agent
-	if key := cfg.AnthropicKeyOrEnv(); key != "" {
-		agent = ai.NewAgent(client, key)
+	anthKey := cfg.AnthropicKeyOrEnv()
+	mmKey := cfg.MinimaxKeyOrEnv()
+	if anthKey != "" || mmKey != "" {
+		agent = ai.NewAgent(client, anthKey)
+		if mmKey != "" {
+			agent.SetMinimaxKey(mmKey)
+		}
+		if cfg.Model != "" {
+			_ = agent.SetModel(cfg.Model)
+		}
 	}
 
 	credStore, _ := credential.Load()
 	wfStore, _ := workflow.Load()
+
+	// Apply saved theme.
+	if cfg.Theme != "" {
+		if t, ok := Themes[cfg.Theme]; ok {
+			ApplyTheme(t)
+		}
+	}
+
+	// Load input history from disk.
+	inputHistory := loadInputHistory()
 
 	return Model{
 		textInput:     ti,
@@ -139,6 +226,8 @@ func New() Model {
 		bootFrame:     0,
 		bootTagline:   startupTaglines[rand.Intn(len(startupTaglines))],
 		bootStartTime: time.Now(),
+		historyIndex:  -1,
+		inputHistory:  inputHistory,
 		cfg:           cfg,
 		client:        client,
 		agent:         agent,
@@ -176,7 +265,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.bootFrame >= totalFrames {
 			m.booting = false
-			return m, nil
+			var bootCmds []tea.Cmd
+			// Start live ticker if API is configured.
+			if m.client.IsConfigured() {
+				m.tickerTicking = true
+				client := m.client
+				bootCmds = append(bootCmds, func() tea.Msg {
+					prices, err := client.GetPrices([]string{"BTC", "ETH", "SOL"})
+					if err != nil {
+						return tickerUpdateMsg{}
+					}
+					return tickerUpdateMsg{prices: prices}
+				})
+			}
+			return m, tea.Batch(bootCmds...)
 		}
 
 		// Variable speed: slow for logo, fast for tagline, medium for checks.
@@ -226,12 +328,117 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case alertCheckMsg:
+		if len(m.alerts) == 0 {
+			m.alertTicking = false
+			return m, nil
+		}
+		symbolSet := make(map[string]bool)
+		for _, a := range m.alerts {
+			symbolSet[a.symbol] = true
+		}
+		symbols := make([]string, 0, len(symbolSet))
+		for s := range symbolSet {
+			symbols = append(symbols, s)
+		}
+		client := m.client
+		alerts := make([]priceAlert, len(m.alerts))
+		copy(alerts, m.alerts)
+		return m, tea.Batch(
+			func() tea.Msg {
+				prices, err := client.GetPrices(symbols)
+				if err != nil {
+					return nil
+				}
+				priceMap := make(map[string]float64)
+				for _, p := range prices {
+					priceMap[p.Symbol] = p.Price
+				}
+				for _, a := range alerts {
+					normalized := api.NormalizeSymbol(a.symbol)
+					price, ok := priceMap[normalized]
+					if !ok {
+						continue
+					}
+					if (a.operator == ">" && price > a.target) ||
+						(a.operator == "<" && price < a.target) {
+						return alertTriggeredMsg{
+							symbol: a.symbol, currentPrice: price,
+							operator: a.operator, target: a.target,
+						}
+					}
+				}
+				return nil
+			},
+			tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return alertCheckMsg{} }),
+		)
+
+	case alertTriggeredMsg:
+		// Remove the triggered alert.
+		for i, a := range m.alerts {
+			if a.symbol == msg.symbol && a.operator == msg.operator && a.target == msg.target {
+				m.alerts = append(m.alerts[:i], m.alerts[i+1:]...)
+				break
+			}
+		}
+		alertContent := "\a" + WarningStyle.Render("  ALERT ") +
+			BrandStyle.Render(msg.symbol) + " is now " +
+			lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(formatPrice(msg.currentPrice)) +
+			DimStyle.Render(fmt.Sprintf("  (target: %s %s)", msg.operator, formatPrice(msg.target)))
+		m.addBotMessage(alertContent)
+		m.updateViewport()
+		return m, nil
+
+	case tickerFetchMsg:
+		if !m.tickerTicking {
+			return m, nil
+		}
+		client := m.client
+		return m, func() tea.Msg {
+			prices, err := client.GetPrices([]string{"BTC", "ETH", "SOL"})
+			if err != nil {
+				return tickerUpdateMsg{}
+			}
+			return tickerUpdateMsg{prices: prices}
+		}
+
+	case tickerUpdateMsg:
+		if len(msg.prices) > 0 {
+			m.tickerPrices = msg.prices
+		}
+		if !m.tickerTicking {
+			return m, nil
+		}
+		return m, tea.Tick(15*time.Second, func(t time.Time) tea.Msg {
+			return tickerFetchMsg{}
+		})
+
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
+			saveInputHistory(m.inputHistory)
 			return m, tea.Quit
 		}
 		// Ignore key input during boot animation.
 		if m.booting {
+			return m, nil
+		}
+
+		// ── Overlay dialog input (takes priority) ──
+		if m.dialog.Active != DialogNone {
+			return m.updateDialog(msg)
+		}
+
+		// ── Global hotkeys (Ctrl+K, Ctrl+T, Ctrl+O) ──
+		switch msg.String() {
+		case "ctrl+k":
+			m.dialog = DialogState{Active: DialogPalette}
+			m.dialog.FilteredList = filterPaletteCommands("")
+			return m, nil
+		case "ctrl+t":
+			m.dialog = DialogState{Active: DialogTheme}
+			return m, nil
+		case "ctrl+o":
+			m.dialog = DialogState{Active: DialogModel}
 			return m, nil
 		}
 
@@ -244,6 +451,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCommandMode(msg)
 		case ModeSearch:
 			return m.updateSearchMode(msg)
+		case ModeConfirm:
+			return m.updateConfirmMode(msg)
 		}
 
 	case tea.WindowSizeMsg:
@@ -285,15 +494,58 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		m.vimMode = ModeNormal
 		m.normalKeyBuf = ""
+		m.completionCandidates = nil
 		m.textInput.Blur()
 		return m, nil
 
+	case tea.KeyTab:
+		return m.handleTabCompletion()
+
+	case tea.KeyUp:
+		if len(m.inputHistory) == 0 {
+			return m, nil
+		}
+		if m.historyIndex == -1 {
+			m.historySaved = m.textInput.Value()
+			m.historyIndex = len(m.inputHistory) - 1
+		} else if m.historyIndex > 0 {
+			m.historyIndex--
+		}
+		m.textInput.SetValue(m.inputHistory[m.historyIndex])
+		m.textInput.CursorEnd()
+		return m, nil
+
+	case tea.KeyDown:
+		if m.historyIndex == -1 {
+			return m, nil
+		}
+		if m.historyIndex < len(m.inputHistory)-1 {
+			m.historyIndex++
+			m.textInput.SetValue(m.inputHistory[m.historyIndex])
+		} else {
+			m.historyIndex = -1
+			m.textInput.SetValue(m.historySaved)
+		}
+		m.textInput.CursorEnd()
+		return m, nil
+
 	case tea.KeyEnter:
+		m.completionCandidates = nil
+		m.historyIndex = -1
 		input := strings.TrimSpace(m.textInput.Value())
 		if input == "" {
 			return m, nil
 		}
 		m.textInput.SetValue("")
+
+		// Save to command history (deduplicate consecutive).
+		if len(m.inputHistory) == 0 || m.inputHistory[len(m.inputHistory)-1] != input {
+			m.inputHistory = append(m.inputHistory, input)
+			// Keep last 100 entries.
+			if len(m.inputHistory) > 100 {
+				m.inputHistory = m.inputHistory[len(m.inputHistory)-100:]
+			}
+		}
 
 		m.messages = append(m.messages, message{
 			content: UserMsgStyle.Render("you: ") + input,
@@ -304,6 +556,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		switch result.Type {
 		case commands.TypeQuit:
+			saveInputHistory(m.inputHistory)
 			return m, tea.Quit
 		case commands.TypeClear:
 			m.messages = nil
@@ -336,9 +589,36 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				},
 			)
 
+		case commands.TypeBuy, commands.TypeSell:
+			// Trade confirmation flow (synchronous — no API call yet).
+			side := "buy"
+			if result.Type == commands.TypeSell {
+				side = "sell"
+			}
+			output := m.handleTrade(side, result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			return m, nil
+
+		case commands.TypeAlert:
+			// Alert management (synchronous).
+			output := m.handleAlert(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			// Start alert ticker if we just added the first alert.
+			if !m.alertTicking && len(m.alerts) > 0 {
+				m.alertTicking = true
+				return m, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return alertCheckMsg{} })
+			}
+			return m, nil
+
 		case commands.TypePrice, commands.TypeStatus, commands.TypeOrders,
-			commands.TypeBuy, commands.TypeSell, commands.TypeSnapshot,
-			commands.TypeMarket, commands.TypePnl, commands.TypeHistory:
+			commands.TypeSnapshot, commands.TypeMarket, commands.TypePnl,
+			commands.TypeHistory, commands.TypeChart:
 			// Async API call with loading spinner.
 			m.loading = true
 			m.loadingFrame = 0
@@ -346,12 +626,10 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
 			m.updateViewport()
 			rCopy := result
-			width := m.width
 			return m, tea.Batch(
 				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 				func() tea.Msg {
 					output := m.renderResult(rCopy)
-					_ = width
 					return apiResponseMsg{content: output}
 				},
 			)
@@ -369,6 +647,9 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 	}
+
+	// Reset completion on any non-Tab key.
+	m.completionCandidates = nil
 
 	// Forward to textInput.
 	var cmd tea.Cmd
@@ -461,8 +742,14 @@ func (m Model) updateNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.normalKeyBuf = ""
 		return m, nil
 
+	// Help overlay.
+	case "?":
+		m.dialog = DialogState{Active: DialogHelp}
+		return m, nil
+
 	// Quit.
 	case "q":
+		saveInputHistory(m.inputHistory)
 		return m, tea.Quit
 	}
 
@@ -516,8 +803,10 @@ func (m Model) executeVimCommand(cmd string) (tea.Model, tea.Cmd) {
 
 	switch base {
 	case "q", "q!":
+		saveInputHistory(m.inputHistory)
 		return m, tea.Quit
 	case "wq":
+		saveInputHistory(m.inputHistory)
 		return m, tea.Quit
 	case "w":
 		m.addBotMessage(DimStyle.Render("  Nothing to save."))
@@ -675,6 +964,343 @@ func (m *Model) executeSearch() {
 	}
 }
 
+// --- CONFIRM mode ---
+
+func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if m.pendingTrade == nil {
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			return m, textinput.Blink
+		}
+		m.loading = true
+		m.loadingFrame = 0
+		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " Executing trade...")
+		m.updateViewport()
+
+		req := *m.pendingTrade
+		m.pendingTrade = nil
+		m.vimMode = ModeInsert
+		m.textInput.Focus()
+
+		client := m.client
+		width := m.width
+		return m, tea.Batch(
+			textinput.Blink,
+			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+			func() tea.Msg {
+				order, err := client.PlaceOrder(req)
+				if err != nil {
+					return apiResponseMsg{content: RenderOrderError(req.Side, req.Symbol, err)}
+				}
+				return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+			},
+		)
+
+	case "n", "N", "q":
+		m.pendingTrade = nil
+		m.vimMode = ModeInsert
+		m.textInput.Focus()
+		m.addBotMessage(DimStyle.Render("  Trade cancelled."))
+		m.updateViewport()
+		return m, textinput.Blink
+	}
+
+	return m, nil
+}
+
+// --- Overlay dialog input ---
+
+func (m Model) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.dialog.Active {
+	case DialogHelp:
+		// Any key closes help.
+		m.dialog.Active = DialogNone
+		return m, nil
+
+	case DialogTheme:
+		names := sortedThemeNames()
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.dialog.Active = DialogNone
+			return m, nil
+		case tea.KeyUp:
+			if m.dialog.Cursor > 0 {
+				m.dialog.Cursor--
+			}
+			return m, nil
+		case tea.KeyDown:
+			if m.dialog.Cursor < len(names)-1 {
+				m.dialog.Cursor++
+			}
+			return m, nil
+		case tea.KeyEnter:
+			selected := names[m.dialog.Cursor]
+			if t, ok := Themes[selected]; ok {
+				ApplyTheme(t)
+				m.cfg.Theme = selected
+				_ = m.cfg.Save()
+				m.addBotMessage(BotMsgStyle.Render("nick: ") +
+					"Theme switched to " + CommandStyle.Render(selected))
+				m.updateViewport()
+			}
+			m.dialog.Active = DialogNone
+			return m, nil
+		}
+		switch msg.String() {
+		case "j":
+			if m.dialog.Cursor < len(names)-1 {
+				m.dialog.Cursor++
+			}
+			return m, nil
+		case "k":
+			if m.dialog.Cursor > 0 {
+				m.dialog.Cursor--
+			}
+			return m, nil
+		}
+		return m, nil
+
+	case DialogModel:
+		models := ai.AvailableModels
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.dialog.Active = DialogNone
+			return m, nil
+		case tea.KeyUp:
+			if m.dialog.Cursor > 0 {
+				m.dialog.Cursor--
+			}
+			return m, nil
+		case tea.KeyDown:
+			if m.dialog.Cursor < len(models)-1 {
+				m.dialog.Cursor++
+			}
+			return m, nil
+		case tea.KeyEnter:
+			if m.agent == nil {
+				m.addBotMessage(ErrorStyle.Render("No AI agent configured. Set an API key first."))
+				m.updateViewport()
+				m.dialog.Active = DialogNone
+				return m, nil
+			}
+			selected := models[m.dialog.Cursor]
+			if err := m.agent.SetModel(selected.ID); err != nil {
+				m.addBotMessage(ErrorStyle.Render("Error: " + err.Error()))
+			} else {
+				m.cfg.Model = selected.ID
+				_ = m.cfg.Save()
+				m.addBotMessage(BotMsgStyle.Render("nick: ") +
+					"Model switched to " + CommandStyle.Render(selected.ID))
+			}
+			m.updateViewport()
+			m.dialog.Active = DialogNone
+			return m, nil
+		}
+		switch msg.String() {
+		case "j":
+			if m.dialog.Cursor < len(models)-1 {
+				m.dialog.Cursor++
+			}
+			return m, nil
+		case "k":
+			if m.dialog.Cursor > 0 {
+				m.dialog.Cursor--
+			}
+			return m, nil
+		}
+		return m, nil
+
+	case DialogPalette:
+		switch msg.Type {
+		case tea.KeyEsc:
+			m.dialog.Active = DialogNone
+			return m, nil
+		case tea.KeyUp:
+			if m.dialog.Cursor > 0 {
+				m.dialog.Cursor--
+			}
+			return m, nil
+		case tea.KeyDown:
+			maxIdx := len(m.dialog.FilteredList) - 1
+			if maxIdx > 11 {
+				maxIdx = 11
+			}
+			if m.dialog.Cursor < maxIdx {
+				m.dialog.Cursor++
+			}
+			return m, nil
+		case tea.KeyEnter:
+			if m.dialog.Cursor < len(m.dialog.FilteredList) {
+				entry := m.dialog.FilteredList[m.dialog.Cursor]
+				cmd := strings.SplitN(entry, "|", 2)[0]
+				m.dialog.Active = DialogNone
+				// Inject the command as if typed.
+				m.textInput.SetValue(cmd)
+				// Simulate enter.
+				return m.updateInsertMode(tea.KeyMsg{Type: tea.KeyEnter})
+			}
+			m.dialog.Active = DialogNone
+			return m, nil
+		case tea.KeyBackspace:
+			if len(m.dialog.Filter) > 0 {
+				m.dialog.Filter = m.dialog.Filter[:len(m.dialog.Filter)-1]
+				m.dialog.FilteredList = filterPaletteCommands(m.dialog.Filter)
+				m.dialog.Cursor = 0
+			}
+			return m, nil
+		case tea.KeyRunes:
+			m.dialog.Filter += msg.String()
+			m.dialog.FilteredList = filterPaletteCommands(m.dialog.Filter)
+			m.dialog.Cursor = 0
+			return m, nil
+		case tea.KeySpace:
+			m.dialog.Filter += " "
+			m.dialog.FilteredList = filterPaletteCommands(m.dialog.Filter)
+			m.dialog.Cursor = 0
+			return m, nil
+		}
+		return m, nil
+	}
+
+	// Fallback: close dialog.
+	m.dialog.Active = DialogNone
+	return m, nil
+}
+
+// --- Tab completion ---
+
+func (m Model) handleTabCompletion() (tea.Model, tea.Cmd) {
+	input := m.textInput.Value()
+
+	if len(m.completionCandidates) > 0 {
+		// Cycle through existing candidates.
+		m.completionIndex = (m.completionIndex + 1) % len(m.completionCandidates)
+		m.textInput.SetValue(m.completionCandidates[m.completionIndex])
+		m.textInput.CursorEnd()
+		return m, nil
+	}
+
+	candidates := buildCompletionCandidates(input)
+	if len(candidates) == 0 {
+		return m, nil
+	}
+
+	m.completionCandidates = candidates
+	m.completionIndex = 0
+	m.textInput.SetValue(candidates[0])
+	m.textInput.CursorEnd()
+	return m, nil
+}
+
+func buildCompletionCandidates(input string) []string {
+	if input == "" {
+		return nil
+	}
+
+	parts := strings.Fields(input)
+
+	// Complete command name when typing "/..." with no space yet.
+	if strings.HasPrefix(input, "/") && (len(parts) == 1 && !strings.HasSuffix(input, " ")) {
+		prefix := strings.ToLower(parts[0])
+		var matches []string
+		for _, cmd := range knownCommands {
+			if strings.HasPrefix(cmd, prefix) {
+				matches = append(matches, cmd)
+			}
+		}
+		return matches
+	}
+
+	// Complete symbol after a symbol-taking command.
+	if len(parts) >= 1 && strings.HasPrefix(input, "/") {
+		cmd := strings.ToLower(parts[0])
+		if symbolCommands[cmd] {
+			var partial string
+			if strings.HasSuffix(input, " ") {
+				partial = ""
+			} else if len(parts) > 1 {
+				partial = strings.ToUpper(parts[len(parts)-1])
+			} else {
+				return nil
+			}
+
+			baseInput := input
+			if partial != "" {
+				baseInput = input[:len(input)-len(partial)]
+			}
+
+			var matches []string
+			for _, sym := range knownSymbols {
+				if strings.HasPrefix(sym, partial) {
+					matches = append(matches, baseInput+sym)
+				}
+			}
+			return matches
+		}
+	}
+
+	return nil
+}
+
+// --- Alert handling ---
+
+func (m *Model) handleAlert(args []string) string {
+	if len(args) == 0 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/alert BTC > 100000") + "\n" +
+			DimStyle.Render("  Subcommands: /alert list, /alert clear")
+	}
+
+	sub := strings.ToLower(args[0])
+
+	switch sub {
+	case "list":
+		if len(m.alerts) == 0 {
+			return DimStyle.Render("  No active alerts. Create one with ") +
+				CommandStyle.Render("/alert BTC > 100000")
+		}
+		var lines []string
+		lines = append(lines, SecondaryStyle.Render("  Active Alerts\n"))
+		for _, a := range m.alerts {
+			lines = append(lines, "  "+StatusIndicator("running")+
+				BrandStyle.Render(a.symbol)+" "+a.operator+" "+formatPrice(a.target))
+		}
+		return strings.Join(lines, "\n")
+
+	case "clear":
+		count := len(m.alerts)
+		m.alerts = nil
+		return BotMsgStyle.Render("nick: ") +
+			fmt.Sprintf("Cleared %d alert(s).", count)
+	}
+
+	// Parse: /alert BTC > 100000
+	if len(args) < 3 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/alert BTC > 100000")
+	}
+	symbol := strings.ToUpper(args[0])
+	op := args[1]
+	if op != ">" && op != "<" {
+		return ErrorStyle.Render("  Operator must be ") +
+			CommandStyle.Render(">") + " or " + CommandStyle.Render("<")
+	}
+	target, err := strconv.ParseFloat(args[2], 64)
+	if err != nil || target <= 0 {
+		return ErrorStyle.Render("  Invalid target price: ") + args[2]
+	}
+
+	m.alerts = append(m.alerts, priceAlert{
+		symbol: symbol, operator: op, target: target,
+	})
+
+	return BotMsgStyle.Render("nick: ") + "Alert set: " +
+		BrandStyle.Render(symbol) + " " + op + " " + formatPrice(target) +
+		DimStyle.Render("  (checking every 30s)")
+}
+
 // --- Helper: add bot message ---
 
 func (m *Model) addBotMessage(content string) {
@@ -765,6 +1391,25 @@ func (m *Model) renderResult(r commands.Result) string {
 		return ErrorStyle.Render("Unknown command: ") + r.Input + "\n" +
 			DimStyle.Render("Type /help for available commands.")
 
+	case commands.TypeChart:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		if len(r.Args) == 0 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/chart BTC")
+		}
+		return RenderChart(m.client, strings.ToUpper(r.Args[0]), m.width)
+
+	case commands.TypeAlert:
+		return m.handleAlert(r.Args)
+
+	case commands.TypeTheme:
+		return m.handleTheme(r.Args)
+
+	case commands.TypeModel:
+		return m.handleModel(r.Args)
+
 	case commands.TypeSnapshot:
 		if !m.client.IsConfigured() {
 			return connectPrompt()
@@ -841,9 +1486,11 @@ func (m *Model) handleConfig(args []string) string {
 			m.cfg.BaseURL = value
 		case "anthropic_key":
 			m.cfg.AnthropicKey = value
+		case "minimax_key":
+			m.cfg.MinimaxKey = value
 		default:
 			return ErrorStyle.Render("  Unknown config key: ") + key +
-				"\n" + DimStyle.Render("  Valid keys: api_key, url, anthropic_key")
+				"\n" + DimStyle.Render("  Valid keys: api_key, url, anthropic_key, minimax_key")
 		}
 
 		if err := m.cfg.Save(); err != nil {
@@ -855,6 +1502,12 @@ func (m *Model) handleConfig(args []string) string {
 			if m.agent == nil {
 				m.agent = ai.NewAgent(m.client, akKey)
 			}
+		}
+		if mmKey := m.cfg.MinimaxKeyOrEnv(); mmKey != "" {
+			if m.agent == nil {
+				m.agent = ai.NewAgent(m.client, "")
+			}
+			m.agent.SetMinimaxKey(mmKey)
 		}
 
 		return RenderConfigSet(key, value)
@@ -1067,12 +1720,176 @@ func (m *Model) handleTrade(side string, args []string) string {
 		Price:    limitPrice,
 	}
 
-	order, err := m.client.PlaceOrder(req)
-	if err != nil {
-		return RenderOrderError(side, symbol, err)
+	// Store pending trade and enter confirmation mode.
+	m.pendingTrade = &req
+	m.vimMode = ModeConfirm
+	m.textInput.Blur()
+
+	return RenderTradeConfirmCard(&req, m.width)
+}
+
+// handleTheme processes /theme command.
+func (m *Model) handleTheme(args []string) string {
+	if len(args) == 0 {
+		// Show available themes.
+		var lines []string
+		lines = append(lines, SecondaryStyle.Render("  Available Themes\n"))
+		current := m.cfg.Theme
+		if current == "" {
+			current = "default"
+		}
+		for name := range Themes {
+			indicator := "  "
+			if name == current {
+				indicator = BrandStyle.Render("● ")
+			}
+			lines = append(lines, "  "+indicator+CommandStyle.Render(name))
+		}
+		lines = append(lines, "")
+		lines = append(lines, DimStyle.Render("  Usage: ")+CommandStyle.Render("/theme <name>"))
+		return strings.Join(lines, "\n")
 	}
 
-	return RenderOrderConfirmation(order, m.width)
+	name := strings.ToLower(args[0])
+	t, ok := Themes[name]
+	if !ok {
+		var names []string
+		for n := range Themes {
+			names = append(names, n)
+		}
+		return ErrorStyle.Render("  Unknown theme: ") + name + "\n" +
+			DimStyle.Render("  Available: "+strings.Join(names, ", "))
+	}
+
+	ApplyTheme(t)
+	m.cfg.Theme = name
+	_ = m.cfg.Save()
+
+	return BotMsgStyle.Render("nick: ") + "Theme set to " + BrandStyle.Render(name) + "."
+}
+
+// handleModel processes /model command.
+func (m *Model) handleModel(args []string) string {
+	if len(args) == 0 {
+		// Show available models.
+		var lines []string
+		lines = append(lines, SecondaryStyle.Render("  Available Models\n"))
+		currentModel := "claude-sonnet"
+		if m.agent != nil {
+			currentModel = m.agent.ModelID()
+		}
+		for _, opt := range ai.AvailableModels {
+			indicator := "  "
+			if opt.ID == currentModel {
+				indicator = BrandStyle.Render("● ")
+			}
+			freeTag := ""
+			if opt.Free {
+				freeTag = lipgloss.NewStyle().Foreground(ColorPrimary).Render(" [FREE]")
+			}
+			lines = append(lines, "  "+indicator+CommandStyle.Render(padRight(opt.ID, 18))+
+				DimStyle.Render(opt.Name)+freeTag)
+		}
+		lines = append(lines, "")
+		lines = append(lines, DimStyle.Render("  Usage: ")+CommandStyle.Render("/model <id>"))
+		return strings.Join(lines, "\n")
+	}
+
+	modelID := strings.ToLower(args[0])
+
+	if m.agent == nil {
+		// Create agent if we have any key.
+		anthKey := m.cfg.AnthropicKeyOrEnv()
+		mmKey := m.cfg.MinimaxKeyOrEnv()
+		if anthKey == "" && mmKey == "" {
+			return ErrorStyle.Render("  No API keys configured.") + "\n" +
+				DimStyle.Render("  Set one with ") +
+				CommandStyle.Render("/config set anthropic_key <key>") +
+				DimStyle.Render(" or ") +
+				CommandStyle.Render("/config set minimax_key <key>")
+		}
+		if anthKey != "" {
+			m.agent = ai.NewAgent(m.client, anthKey)
+		} else {
+			m.agent = ai.NewAgent(m.client, "")
+		}
+		if mmKey != "" {
+			m.agent.SetMinimaxKey(mmKey)
+		}
+	}
+
+	if err := m.agent.SetModel(modelID); err != nil {
+		return ErrorStyle.Render("  " + err.Error())
+	}
+
+	m.cfg.Model = modelID
+	_ = m.cfg.Save()
+
+	// Find model name for display.
+	name := modelID
+	for _, opt := range ai.AvailableModels {
+		if opt.ID == modelID {
+			name = opt.Name
+			break
+		}
+	}
+
+	return BotMsgStyle.Render("nick: ") + "Switched to " + BrandStyle.Render(name) + "."
+}
+
+// --- Session persistence ---
+
+// historyFilePath returns ~/.nickai/input_history.json.
+func historyFilePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home + "/.nickai/input_history.json"
+}
+
+// loadInputHistory reads persisted input history from disk.
+func loadInputHistory() []string {
+	path := historyFilePath()
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var history []string
+	if err := json.Unmarshal(data, &history); err != nil {
+		return nil
+	}
+	// Keep last 100.
+	if len(history) > 100 {
+		history = history[len(history)-100:]
+	}
+	return history
+}
+
+// saveInputHistory persists input history to disk.
+func saveInputHistory(history []string) {
+	path := historyFilePath()
+	if path == "" {
+		return
+	}
+	// Keep last 100.
+	if len(history) > 100 {
+		history = history[len(history)-100:]
+	}
+	data, err := json.Marshal(history)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(home()+"/.nickai", 0700)
+	_ = os.WriteFile(path, data, 0600)
+}
+
+func home() string {
+	h, _ := os.UserHomeDir()
+	return h
 }
 
 func (m *Model) updateViewport() {
@@ -1094,7 +1911,12 @@ func (m *Model) updateViewport() {
 	var parts []string
 	parts = append(parts, welcome)
 	for _, msg := range m.messages {
-		parts = append(parts, msg.content)
+		// Apply left-border accent bars.
+		if msg.isUser {
+			parts = append(parts, UserMsgBar(msg.content))
+		} else {
+			parts = append(parts, BotMsgBar(msg.content))
+		}
 		parts = append(parts, "")
 	}
 	content := strings.Join(parts, "\n")
@@ -1122,6 +1944,8 @@ func apiLoadingText(t commands.CommandType) string {
 		return "Calculating P&L..."
 	case commands.TypeHistory:
 		return "Loading trade history..."
+	case commands.TypeChart:
+		return "Generating chart..."
 	default:
 		return "Loading..."
 	}
@@ -1139,17 +1963,54 @@ func (m Model) View() string {
 		return m.renderBootSequence()
 	}
 
+	// ── Top bar: logo + live ticker ──
+	topLeft := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("NickAI")
+	topLeft += DimStyle.Render(" v0.3.0")
+
+	var tickerStr string
+	if len(m.tickerPrices) > 0 && m.width > 60 {
+		var tickerParts []string
+		for _, p := range m.tickerPrices {
+			sym := strings.TrimSuffix(p.Symbol, "USDT")
+			tickerParts = append(tickerParts,
+				DimStyle.Render(sym+" ")+BrandStyle.Render(formatPrice(p.Price)))
+		}
+		tickerStr = strings.Join(tickerParts, "  ")
+	}
+
 	topBar := lipgloss.NewStyle().
 		Background(lipgloss.Color("#0D0D1A")).
 		Foreground(ColorPrimary).
 		Bold(true).
 		Width(m.width).
 		Padding(0, 1).
-		Render("NickAI Terminal" + DimStyle.Render("  v0.3.0"))
+		Render(topLeft + "    " + tickerStr)
 
 	inputBar := m.renderInputBar()
 
-	return topBar + "\n" + m.viewport.View() + "\n" + inputBar
+	base := topBar + "\n" + m.viewport.View() + "\n" + inputBar
+
+	// Composite overlay dialog if active.
+	if m.dialog.Active != DialogNone {
+		var dialog string
+		switch m.dialog.Active {
+		case DialogHelp:
+			dialog = renderHelpDialog(m.width, m.height)
+		case DialogTheme:
+			dialog = renderThemeDialog(m.dialog.Cursor, m.width, m.height)
+		case DialogModel:
+			dialog = renderModelDialog(m.dialog.Cursor, m.agent, m.width, m.height)
+		case DialogPalette:
+			dialog = renderPaletteDialog(m.dialog.Cursor, m.dialog.Filter, m.dialog.FilteredList, m.width, m.height)
+		}
+		if dialog != "" {
+			return compositeOverlay(base, dialog, m.width, m.height)
+		}
+	}
+
+	return base
 }
 
 // renderBootSequence renders the animated boot screen.
@@ -1242,6 +2103,29 @@ func (m Model) renderBootSequence() string {
 		Render(content)
 }
 
+
+// statusIndicators returns the right-aligned status string (API dot, model, alerts).
+func (m Model) statusIndicators() string {
+	connDot := lipgloss.NewStyle().Foreground(ColorPrimary).Render("●")
+	if !m.client.IsConfigured() {
+		connDot = DimStyle.Render("○")
+	}
+
+	modelName := ""
+	if m.agent != nil {
+		modelName = DimStyle.Render(" ┃ ") +
+			lipgloss.NewStyle().Foreground(ColorSecondary).Render(m.agent.ModelID())
+	}
+
+	alertPart := ""
+	if len(m.alerts) > 0 {
+		alertPart = DimStyle.Render(" ┃ ") +
+			lipgloss.NewStyle().Foreground(ColorWarning).Render(fmt.Sprintf("⚡%d", len(m.alerts)))
+	}
+
+	return connDot + modelName + alertPart
+}
+
 // renderInputBar renders the bottom input area based on vim mode.
 func (m Model) renderInputBar() string {
 	var borderColor lipgloss.Color
@@ -1249,13 +2133,17 @@ func (m Model) renderInputBar() string {
 
 	switch m.vimMode {
 	case ModeInsert:
+		// No badge — clean input with status info right-aligned.
 		borderColor = ColorDim
-		badge := lipgloss.NewStyle().
-			Background(ColorSecondary).
-			Foreground(ColorWhite).
-			Bold(true).
-			Render(" INSERT ")
-		content = badge + " " + m.textInput.View()
+		inputView := m.textInput.View()
+		status := m.statusIndicators()
+		statusWidth := lipgloss.Width(status)
+		inputWidth := m.width - statusWidth - 4
+		if inputWidth < 20 {
+			inputWidth = 20
+		}
+		leftSide := lipgloss.NewStyle().Width(inputWidth).Render(inputView)
+		content = leftSide + status
 
 	case ModeNormal:
 		borderColor = ColorPrimary
@@ -1268,15 +2156,15 @@ func (m Model) renderInputBar() string {
 		hints := DimStyle.Render("i") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(":insert") +
 			DimStyle.Render("  :") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("cmd") +
 			DimStyle.Render("  /") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("search") +
-			DimStyle.Render("  j/k") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(":scroll") +
 			DimStyle.Render("  q") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(":quit")
 
-		// Place badge left, hints right.
-		hintsWidth := m.width - 14 // badge + padding
-		if hintsWidth < 0 {
-			hintsWidth = 0
+		status := m.statusIndicators()
+		middle := hints + "  " + status
+		middleWidth := m.width - 14
+		if middleWidth < 0 {
+			middleWidth = 0
 		}
-		rightAligned := lipgloss.NewStyle().Width(hintsWidth).Align(lipgloss.Right).Render(hints)
+		rightAligned := lipgloss.NewStyle().Width(middleWidth).Align(lipgloss.Right).Render(middle)
 		content = badge + " " + rightAligned
 
 	case ModeCommand:
@@ -1302,6 +2190,17 @@ func (m Model) renderInputBar() string {
 		bufferStyle := lipgloss.NewStyle().Foreground(ColorWarning)
 		content = badge + " " + bufferStyle.Render("/"+m.searchBuffer) +
 			lipgloss.NewStyle().Foreground(ColorWarning).Render("█")
+
+	case ModeConfirm:
+		borderColor = ColorWarning
+		badge := lipgloss.NewStyle().
+			Background(ColorWarning).
+			Foreground(lipgloss.Color("#000000")).
+			Bold(true).
+			Render(" CONFIRM ")
+		hint := lipgloss.NewStyle().Foreground(ColorWarning).
+			Render("  y: confirm  n: cancel")
+		content = badge + hint
 	}
 
 	return lipgloss.NewStyle().

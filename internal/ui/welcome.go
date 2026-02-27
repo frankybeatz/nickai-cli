@@ -85,6 +85,22 @@ func RenderWelcome(width int) string {
 		CommandStyle.Render("/help") +
 		DimStyle.Render(" for commands.")
 
+	// Random tip (OpenCode-inspired).
+	tips := []string{
+		"Tab completes commands and symbols",
+		"Press Esc for vim NORMAL mode, j/k to scroll",
+		"/chart BTC shows a sparkline chart",
+		"/snapshot shows a combined dashboard",
+		"/alert BTC > 100000 sets a background alert",
+		"/model to switch between AI providers",
+		"/theme to change the color scheme",
+		"Up/Down arrow cycles through command history",
+		"/man <command> shows detailed manual pages",
+		":e <file> opens a file in your editor",
+	}
+	tip := lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
+		DimStyle.Render("Tip: "+tips[rand.Intn(len(tips))])
+
 	// Assemble inner content.
 	var inner []string
 	inner = append(inner, "")
@@ -101,6 +117,8 @@ func RenderWelcome(width int) string {
 	inner = append(inner, "")
 	inner = append(inner, ctaLine)
 	inner = append(inner, helpHint)
+	inner = append(inner, "")
+	inner = append(inner, tip)
 	inner = append(inner, "")
 
 	content := strings.Join(inner, "\n")
