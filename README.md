@@ -6,21 +6,34 @@ Conversational trading terminal for [NickAI](https://getnick.ai). Paper trade, d
 
 ## Install
 
+### Homebrew (macOS & Linux)
+
 ```bash
-go run .
+brew tap frankybeatz/nickai
+brew install nickai
 ```
 
-Or build the binary:
+### Go
 
 ```bash
+go install github.com/nickai/cli@latest
+```
+
+### From source
+
+```bash
+git clone https://github.com/frankybeatz/nickai-cli.git
+cd nickai-cli
 make build
 ./nickai
 ```
 
-Pre-built binaries for macOS, Linux, and Windows:
+### Pre-built binaries
+
+Download from [Releases](https://github.com/frankybeatz/nickai-cli/releases), or build all platforms locally:
 
 ```bash
-make release    # builds all platforms to build/
+make release    # builds darwin/linux/windows × arm64/amd64 to build/
 ```
 
 Requires Go 1.23+.

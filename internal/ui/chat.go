@@ -1967,7 +1967,7 @@ func (m Model) View() string {
 	topLeft := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("NickAI")
-	topLeft += DimStyle.Render(" v0.3.0")
+	topLeft += DimStyle.Render(" v" + Version)
 
 	var tickerStr string
 	if len(m.tickerPrices) > 0 && m.width > 60 {

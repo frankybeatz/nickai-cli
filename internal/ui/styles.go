@@ -2,6 +2,9 @@ package ui
 
 import "github.com/charmbracelet/lipgloss"
 
+// Version is set from main at startup.
+var Version = "dev"
+
 // Theme defines a color scheme.
 type Theme struct {
 	Name      string

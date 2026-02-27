@@ -8,7 +8,8 @@ import (
 	"github.com/nickai/cli/internal/ui"
 )
 
-const version = "0.3.0"
+// version is set at build time via -ldflags.
+var version = "dev"
 
 func main() {
 	if len(os.Args) > 1 {
@@ -34,6 +35,8 @@ func main() {
 			return
 		}
 	}
+
+	ui.Version = version
 
 	p := tea.NewProgram(
 		ui.New(),

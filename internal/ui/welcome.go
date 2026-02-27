@@ -51,7 +51,7 @@ func RenderWelcome(width int) string {
 		Bold(true).
 		Render("The agentic OS for autonomous finance")
 
-	version := DimStyle.Render("v0.3.0")
+	version := DimStyle.Render("v" + Version)
 
 	// Decorative divider — alternating dashes give an "energy pulse" look.
 	pulseUnit := "─ · "

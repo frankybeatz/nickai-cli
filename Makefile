@@ -1,8 +1,8 @@
-VERSION := 0.3.0
+VERSION := 0.4.0
 BINARY  := nickai
 BUILD   := build
 
-LDFLAGS := -s -w
+LDFLAGS := -s -w -X main.version=$(VERSION)
 
 # Default: build for current platform.
 .PHONY: build
@@ -19,6 +19,11 @@ run:
 test:
 	go vet ./...
 	go build ./...
+
+# Install to GOPATH/bin.
+.PHONY: install
+install:
+	go install -ldflags "$(LDFLAGS)" .
 
 # Build all release binaries.
 .PHONY: release

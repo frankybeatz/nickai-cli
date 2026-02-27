@@ -1,0 +1,47 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+    - go vet ./...
+
+builds:
+  - main: .
+    binary: nickai
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - format: tar.gz
+    name_template: "nickai-{{ .Os }}-{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+
+brews:
+  - repository:
+      owner: frankybeatz
+      name: homebrew-nickai
+    homepage: https://github.com/frankybeatz/nickai-cli
+    description: Conversational trading terminal for autonomous finance
+    license: MIT
+    install: |
+      bin.install "nickai"
+    test: |
+      system "#{bin}/nickai", "--version"
