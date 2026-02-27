@@ -331,10 +331,12 @@ func RenderConfigHelp() string {
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/config init") + DimStyle.Render("                    — auto-provision API key"),
+		"  " + CommandStyle.Render("/config init force") + DimStyle.Render("              — re-provision (overwrite existing key)"),
 		"  " + CommandStyle.Render("/config show") + DimStyle.Render("                    — display current config"),
 		"  " + CommandStyle.Render("/config set api_key <key>") + DimStyle.Render("       — set PaperNick API key"),
 		"  " + CommandStyle.Render("/config set anthropic_key <key>") + DimStyle.Render(" — set Anthropic API key"),
 		"  " + CommandStyle.Render("/config set url <url>") + DimStyle.Render("           — set base URL"),
+		"  " + CommandStyle.Render("/config reset <key>") + DimStyle.Render("             — clear a config key"),
 		"  " + CommandStyle.Render("/config test") + DimStyle.Render("                    — test API connection"),
 	}
 	return strings.Join(lines, "\n")

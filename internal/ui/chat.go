@@ -1637,10 +1637,12 @@ func (m *Model) handleConfig(args []string) string {
 	switch sub {
 	case "init":
 		// Auto-provision: create anonymous account and store API key.
-		if m.cfg.APIKey != "" {
+		// Allow re-provisioning with "init force" if user set wrong key.
+		if m.cfg.APIKey != "" && !(len(args) > 1 && args[1] == "force") {
 			return BotMsgStyle.Render("nick: ") + "API key already configured. " +
 				DimStyle.Render("Use ") + CommandStyle.Render("/config show") +
-				DimStyle.Render(" to view it.")
+				DimStyle.Render(" to view, or ") + CommandStyle.Render("/config init force") +
+				DimStyle.Render(" to re-provision.")
 		}
 		name := fmt.Sprintf("nickai-%s", randomID(8))
 		email := name + "@nickai.local"
@@ -1710,6 +1712,30 @@ func (m *Model) handleConfig(args []string) string {
 		}
 
 		return RenderConfigSet(key, value)
+
+	case "reset":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/config reset api_key") + "\n" +
+				DimStyle.Render("  Valid keys: api_key, anthropic_key, minimax_key")
+		}
+		key := strings.ToLower(args[1])
+		switch key {
+		case "api_key":
+			m.cfg.APIKey = ""
+		case "anthropic_key":
+			m.cfg.AnthropicKey = ""
+		case "minimax_key":
+			m.cfg.MinimaxKey = ""
+		default:
+			return ErrorStyle.Render("  Unknown config key: ") + key +
+				"\n" + DimStyle.Render("  Valid keys: api_key, anthropic_key, minimax_key")
+		}
+		if err := m.cfg.Save(); err != nil {
+			return ErrorStyle.Render("  Failed to save config: ") + err.Error()
+		}
+		m.client.UpdateConfig(m.cfg)
+		return BotMsgStyle.Render("nick: ") + "Cleared " + CommandStyle.Render(key) + "."
 
 	default:
 		return RenderConfigHelp()
