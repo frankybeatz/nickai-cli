@@ -249,6 +249,60 @@ and SEE ALSO sections.`,
 		},
 		seeAlso: []string{"help"},
 	},
+	"snapshot": {
+		name:     "snapshot - combined portfolio dashboard",
+		synopsis: "/snapshot",
+		desc: `Display a combined dashboard view with portfolio positions,
+market prices, agent status, and recent trades in a single
+screen. Pulls live data from the PaperNick API for portfolio
+and market sections.
+
+Agent data is currently mock data. Recent trades are limited
+to the 5 most recent orders.
+
+Alias: /snap`,
+		examples: []string{"/snapshot", "/snap"},
+		seeAlso:  []string{"status", "market", "pnl"},
+	},
+	"market": {
+		name:     "market - full market overview",
+		synopsis: "/market",
+		desc: `Display prices for the top 10 cryptocurrencies in a formatted
+table: BTC, ETH, SOL, DOGE, ADA, AVAX, LINK, DOT, MATIC, XRP.
+
+Shows current price for each asset with a last-updated timestamp.
+
+Requires a configured API key.`,
+		examples: []string{"/market"},
+		seeAlso:  []string{"price", "watch", "snapshot"},
+	},
+	"pnl": {
+		name:     "pnl - profit and loss summary",
+		synopsis: "/pnl",
+		desc: `Calculate and display profit and loss from your trading history.
+Shows starting balance ($100K), current portfolio value, total
+P&L with percentage, a visual progress bar, and trade statistics
+including win rate, best trade, and worst trade.
+
+P&L is calculated from order history and current portfolio value.
+
+Requires a configured API key.`,
+		examples: []string{"/pnl"},
+		seeAlso:  []string{"history", "status", "orders"},
+	},
+	"history": {
+		name:     "history - trade journal",
+		synopsis: "/history",
+		desc: `Display a numbered trade journal showing all orders with
+timestamps, side (BUY/SELL), asset, amount, and status.
+Includes a count of total trades and trades made today.
+
+Alias: /journal
+
+Requires a configured API key.`,
+		examples: []string{"/history", "/journal"},
+		seeAlso:  []string{"orders", "pnl", "status"},
+	},
 	"watch": {
 		name:     "watch - live price monitor",
 		synopsis: "/watch <SYMBOL> [SYMBOL...]",
@@ -283,6 +337,10 @@ func RenderManPage(command string) string {
 		command = "man"
 	case "exit":
 		command = "quit"
+	case "snap":
+		command = "snapshot"
+	case "journal":
+		command = "history"
 	}
 
 	page, ok := manPages[command]
@@ -354,6 +412,10 @@ func RenderManIndex() string {
 		{"orders", "List recent orders"},
 		{"agents", "List trading agents"},
 		{"templates", "Browse marketplace"},
+		{"snapshot", "Combined portfolio dashboard"},
+		{"market", "Full market overview"},
+		{"pnl", "Profit and loss summary"},
+		{"history", "Trade journal"},
 		{"config", "Manage configuration"},
 		{"credential", "Manage exchange API keys"},
 		{"workflow", "Manage automation workflows"},

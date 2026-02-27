@@ -2,10 +2,12 @@ package ui
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -32,6 +34,39 @@ const (
 // editorFinishedMsg is sent when an external editor process completes.
 type editorFinishedMsg struct{ err error }
 
+// bootTickMsg advances the boot animation.
+type bootTickMsg struct{}
+
+// spinnerTickMsg advances the loading spinner.
+type spinnerTickMsg struct{}
+
+// aiResponseMsg carries the result of an async AI call.
+type aiResponseMsg struct {
+	response string
+	err      error
+}
+
+// apiResponseMsg carries the result of an async API command.
+type apiResponseMsg struct {
+	content string
+}
+
+// Braille spinner frames.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// Thinking text variants.
+var thinkingTexts = []string{"Thinking...", "Analyzing...", "Reasoning..."}
+
+// Boot sequence ASCII logo — block letters for readability.
+var bootLogo = []string{
+	` ███╗   ██╗ ██╗  ██████╗ ██╗  ██╗  █████╗  ██╗`,
+	` ████╗  ██║ ██║ ██╔════╝ ██║ ██╔╝ ██╔══██╗ ██║`,
+	` ██╔██╗ ██║ ██║ ██║      █████╔╝  ███████║ ██║`,
+	` ██║╚██╗██║ ██║ ██║      ██╔═██╗  ██╔══██║ ██║`,
+	` ██║ ╚████║ ██║ ╚██████╗ ██║  ██╗ ██║  ██║ ██║`,
+	` ╚═╝  ╚═══╝ ╚═╝  ╚═════╝ ╚═╝  ╚═╝ ╚═╝  ╚═╝ ╚═╝`,
+}
+
 // message represents a single chat entry.
 type message struct {
 	content string
@@ -54,6 +89,17 @@ type Model struct {
 	searchPattern string // last search pattern
 	normalKeyBuf  string // for multi-key sequences (gg)
 	viewContent   string // cached viewport content for search
+
+	// Boot sequence state.
+	booting       bool
+	bootFrame     int
+	bootTagline   string
+	bootStartTime time.Time
+
+	// Loading spinner state.
+	loading      bool
+	loadingFrame int
+	loadingText  string
 
 	// Data stores.
 	cfg       *config.Config
@@ -87,18 +133,24 @@ func New() Model {
 	wfStore, _ := workflow.Load()
 
 	return Model{
-		textInput: ti,
-		vimMode:   ModeInsert,
-		cfg:       cfg,
-		client:    client,
-		agent:     agent,
-		credStore: credStore,
-		wfStore:   wfStore,
+		textInput:     ti,
+		vimMode:       ModeInsert,
+		booting:       true,
+		bootFrame:     0,
+		bootTagline:   startupTaglines[rand.Intn(len(startupTaglines))],
+		bootStartTime: time.Now(),
+		cfg:           cfg,
+		client:        client,
+		agent:         agent,
+		credStore:     credStore,
+		wfStore:       wfStore,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
+		return bootTickMsg{}
+	}))
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -111,9 +163,76 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textInput.Blur()
 		return m, nil
 
+	case bootTickMsg:
+		if !m.booting {
+			return m, nil
+		}
+		m.bootFrame++
+
+		logoEnd := len(bootLogo)
+		taglineEnd := logoEnd + len(m.bootTagline)
+		checksEnd := taglineEnd + 1 + 4*2 // gap + 4 checks * 2 frames each
+		totalFrames := checksEnd + 2       // + ready message + buffer
+
+		if m.bootFrame >= totalFrames {
+			m.booting = false
+			return m, nil
+		}
+
+		// Variable speed: slow for logo, fast for tagline, medium for checks.
+		var delay time.Duration
+		switch {
+		case m.bootFrame <= logoEnd:
+			delay = 150 * time.Millisecond // logo lines: slow reveal
+		case m.bootFrame <= taglineEnd:
+			delay = 30 * time.Millisecond // tagline typing: fast
+		default:
+			delay = 200 * time.Millisecond // checks: deliberate pace
+		}
+
+		return m, tea.Tick(delay, func(t time.Time) tea.Msg {
+			return bootTickMsg{}
+		})
+
+	case spinnerTickMsg:
+		if !m.loading {
+			return m, nil
+		}
+		m.loadingFrame++
+		m.updateViewport()
+		return m, tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg {
+			return spinnerTickMsg{}
+		})
+
+	case aiResponseMsg:
+		m.loading = false
+		// Replace the last "Thinking..." message with the actual response.
+		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+			if msg.err != nil {
+				m.messages[len(m.messages)-1].content = ErrorStyle.Render("  AI error: ") + msg.err.Error()
+			} else {
+				m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick: ") + msg.response
+			}
+		}
+		m.updateViewport()
+		return m, nil
+
+	case apiResponseMsg:
+		m.loading = false
+		// Replace the last loading message with the actual result.
+		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+			m.messages[len(m.messages)-1].content = msg.content
+		}
+		m.updateViewport()
+		return m, nil
+
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			return m, tea.Quit
+		}
+		// Ignore key input during boot animation.
+		if m.booting {
+			return m, nil
 		}
 
 		switch m.vimMode {
@@ -191,6 +310,52 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.viewport.SetContent(RenderWelcome(m.width))
 			m.viewport.GotoBottom()
 			return m, nil
+
+		case commands.TypeChat:
+			// Async AI call with loading spinner.
+			if m.agent == nil {
+				m.addBotMessage(BotMsgStyle.Render("nick: ") +
+					"I need an Anthropic API key to chat. Set one with " +
+					CommandStyle.Render("/config set anthropic_key <key>") +
+					" or " + DimStyle.Render("export ANTHROPIC_API_KEY=..."))
+				m.updateViewport()
+				return m, nil
+			}
+			m.loading = true
+			m.loadingFrame = 0
+			m.loadingText = "Thinking..."
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+			m.updateViewport()
+			agent := m.agent
+			userInput := result.Input
+			return m, tea.Batch(
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					resp, err := agent.Chat(userInput)
+					return aiResponseMsg{response: resp, err: err}
+				},
+			)
+
+		case commands.TypePrice, commands.TypeStatus, commands.TypeOrders,
+			commands.TypeBuy, commands.TypeSell, commands.TypeSnapshot,
+			commands.TypeMarket, commands.TypePnl, commands.TypeHistory:
+			// Async API call with loading spinner.
+			m.loading = true
+			m.loadingFrame = 0
+			m.loadingText = apiLoadingText(result.Type)
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+			m.updateViewport()
+			rCopy := result
+			width := m.width
+			return m, tea.Batch(
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					output := m.renderResult(rCopy)
+					_ = width
+					return apiResponseMsg{content: output}
+				},
+			)
+
 		default:
 			output := m.renderResult(result)
 			if output != "" {
@@ -600,6 +765,30 @@ func (m *Model) renderResult(r commands.Result) string {
 		return ErrorStyle.Render("Unknown command: ") + r.Input + "\n" +
 			DimStyle.Render("Type /help for available commands.")
 
+	case commands.TypeSnapshot:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		return RenderSnapshot(m.client, m.width)
+
+	case commands.TypeMarket:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		return RenderMarket(m.client, m.width)
+
+	case commands.TypePnl:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		return RenderPnl(m.client, m.width)
+
+	case commands.TypeHistory:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		return RenderHistory(m.client, m.width)
+
 	case commands.TypeChat:
 		if m.agent != nil {
 			resp, err := m.agent.Chat(r.Input)
@@ -894,6 +1083,13 @@ func (m *Model) updateViewport() {
 		return
 	}
 
+	// If loading, update the spinner on the last message.
+	if m.loading && len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+		frame := spinnerFrames[m.loadingFrame%len(spinnerFrames)]
+		text := thinkingTexts[(m.loadingFrame/15)%len(thinkingTexts)]
+		m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick: ") + frame + " " + text
+	}
+
 	welcome := RenderWelcome(m.width)
 	var parts []string
 	parts = append(parts, welcome)
@@ -907,11 +1103,40 @@ func (m *Model) updateViewport() {
 	m.viewport.GotoBottom()
 }
 
+// apiLoadingText returns the loading message for a given command type.
+func apiLoadingText(t commands.CommandType) string {
+	switch t {
+	case commands.TypePrice:
+		return "Fetching prices..."
+	case commands.TypeStatus:
+		return "Loading portfolio..."
+	case commands.TypeOrders:
+		return "Loading orders..."
+	case commands.TypeBuy, commands.TypeSell:
+		return "Executing trade..."
+	case commands.TypeSnapshot:
+		return "Loading snapshot..."
+	case commands.TypeMarket:
+		return "Fetching market data..."
+	case commands.TypePnl:
+		return "Calculating P&L..."
+	case commands.TypeHistory:
+		return "Loading trade history..."
+	default:
+		return "Loading..."
+	}
+}
+
 // --- View ---
 
 func (m Model) View() string {
 	if !m.ready {
 		return "\n  Initializing NickAI..."
+	}
+
+	// Boot sequence animation.
+	if m.booting {
+		return m.renderBootSequence()
 	}
 
 	topBar := lipgloss.NewStyle().
@@ -920,11 +1145,101 @@ func (m Model) View() string {
 		Bold(true).
 		Width(m.width).
 		Padding(0, 1).
-		Render("NickAI Terminal" + DimStyle.Render("  v0.1.0"))
+		Render("NickAI Terminal" + DimStyle.Render("  v0.3.0"))
 
 	inputBar := m.renderInputBar()
 
 	return topBar + "\n" + m.viewport.View() + "\n" + inputBar
+}
+
+// renderBootSequence renders the animated boot screen.
+func (m Model) renderBootSequence() string {
+	var lines []string
+
+	// Add top padding to roughly center vertically.
+	topPad := (m.height - 18) / 3 // 18 ≈ content lines
+	if topPad < 1 {
+		topPad = 1
+	}
+	for i := 0; i < topPad; i++ {
+		lines = append(lines, "")
+	}
+
+	logoStyle := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
+	checkStyle := lipgloss.NewStyle().Foreground(ColorPrimary)
+	pad := "   " // left padding for all content
+
+	// Phase 1: Logo lines appearing one by one (frames 1..6).
+	visibleLogoLines := m.bootFrame
+	if visibleLogoLines > len(bootLogo) {
+		visibleLogoLines = len(bootLogo)
+	}
+	for i := 0; i < visibleLogoLines; i++ {
+		lines = append(lines, pad+logoStyle.Render(bootLogo[i]))
+	}
+
+	// Pad remaining logo space so content below doesn't jump.
+	for i := visibleLogoLines; i < len(bootLogo); i++ {
+		lines = append(lines, "")
+	}
+	lines = append(lines, "")
+
+	// Phase 2: Tagline types out character by character.
+	taglineStart := len(bootLogo)
+	if m.bootFrame > taglineStart {
+		charsVisible := m.bootFrame - taglineStart
+		if charsVisible > len(m.bootTagline) {
+			charsVisible = len(m.bootTagline)
+		}
+		taglineText := m.bootTagline[:charsVisible]
+		cursor := ""
+		if charsVisible < len(m.bootTagline) {
+			cursor = lipgloss.NewStyle().Foreground(ColorSecondary).Render("█")
+		}
+		lines = append(lines, pad+DimStyle.Render("  \"")+DimStyle.Render(taglineText)+cursor+DimStyle.Render("\""))
+	} else {
+		lines = append(lines, "")
+	}
+	lines = append(lines, "")
+
+	// Phase 3: Boot checks (after tagline completes).
+	checksStart := taglineStart + len(m.bootTagline) + 1
+	type bootCheck struct {
+		label string
+	}
+	checks := []bootCheck{
+		{"Connected"},
+		{"Paper trading active"},
+		{"AI agent ready"},
+		{"Vim mode enabled"},
+	}
+
+	for i, check := range checks {
+		checkFrame := checksStart + i*2
+		if m.bootFrame >= checkFrame+1 {
+			// Completed — green checkmark.
+			lines = append(lines, pad+"  "+checkStyle.Render("✓ "+check.label))
+		} else if m.bootFrame >= checkFrame {
+			// Spinning.
+			spinIdx := m.bootFrame % len(spinnerFrames)
+			spinner := lipgloss.NewStyle().Foreground(ColorSecondary).Render(spinnerFrames[spinIdx])
+			lines = append(lines, pad+"  "+spinner+" "+DimStyle.Render(check.label+"..."))
+		}
+	}
+
+	// Phase 4: Ready message.
+	readyFrame := checksStart + len(checks)*2
+	if m.bootFrame >= readyFrame {
+		lines = append(lines, "")
+		lines = append(lines, pad+DimStyle.Render("  Ready. Type /help or just ask me anything."))
+	}
+
+	content := strings.Join(lines, "\n")
+
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Render(content)
 }
 
 // renderInputBar renders the bottom input area based on vim mode.

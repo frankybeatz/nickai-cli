@@ -45,6 +45,10 @@ Config is stored at `~/.nickai/config.json`.
 | `/orders` | Recent orders & trades |
 | `/price BTC ETH` | Live price quotes |
 | `/watch BTC ETH SOL` | Live price dashboard |
+| `/snapshot` | Combined portfolio dashboard |
+| `/market` | Full market overview (10 assets) |
+| `/pnl` | Profit & loss summary |
+| `/history` | Trade journal with all orders |
 | `/buy BTC 0.1` | Market buy |
 | `/sell ETH 1.0 limit 4200` | Limit sell |
 | `/agents` | List trading agents |
@@ -83,6 +87,16 @@ Create automation pipelines from JSON definitions:
 ```
 
 See `examples/` for sample workflows.
+
+## Security
+
+- Zero known vulnerabilities (`govulncheck` clean)
+- All API communication over HTTPS
+- Credentials stored with `0600` permissions, masked in output
+- No telemetry, no auto-updates, no inbound network surface
+- Only 3 direct dependencies, all from [Charmbracelet](https://github.com/charmbracelet)
+
+See [SECURITY.md](SECURITY.md) for the full security policy and audit details.
 
 ## Stack
 

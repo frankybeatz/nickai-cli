@@ -25,6 +25,10 @@ const (
 	TypeLogs
 	TypeMan
 	TypeWatch
+	TypeSnapshot
+	TypeMarket
+	TypePnl
+	TypeHistory
 	TypeUnknown
 )
 
@@ -85,6 +89,14 @@ func Route(input string) Result {
 		return Result{Type: TypeMan, Input: trimmed, Args: args, IsCommand: true}
 	case "/watch":
 		return Result{Type: TypeWatch, Input: trimmed, Args: args, IsCommand: true}
+	case "/snapshot", "/snap":
+		return Result{Type: TypeSnapshot, Input: trimmed, Args: args, IsCommand: true}
+	case "/market":
+		return Result{Type: TypeMarket, Input: trimmed, Args: args, IsCommand: true}
+	case "/pnl":
+		return Result{Type: TypePnl, Input: trimmed, Args: args, IsCommand: true}
+	case "/history", "/journal":
+		return Result{Type: TypeHistory, Input: trimmed, Args: args, IsCommand: true}
 	default:
 		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
 	}
