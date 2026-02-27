@@ -27,7 +27,8 @@ var startupTaglines = []string{
 }
 
 // RenderWelcome returns the NickAI branded welcome screen.
-func RenderWelcome(width int) string {
+// isConfigured indicates whether the user has an API key set.
+func RenderWelcome(width int, isConfigured bool) string {
 	// Constrain the hero box to a comfortable reading width.
 	boxInner := min(width-6, 66)
 	if boxInner < 40 {
@@ -77,29 +78,51 @@ func RenderWelcome(width int) string {
 		Foreground(lipgloss.Color("#AAAAAA")).
 		Render("I can create trading agents, deploy them, check their\nperformance, and manage your portfolio — all from here.")
 
-	ctaLine := lipgloss.NewStyle().
-		Foreground(ColorWhite).
-		Render("To get started, tell me what you want to build.")
+	var ctaLine, helpHint, tip string
 
-	helpHint := DimStyle.Render("Or type ") +
-		CommandStyle.Render("/help") +
-		DimStyle.Render(" for commands.")
+	if !isConfigured {
+		// First-time user: guide them to setup.
+		ctaLine = lipgloss.NewStyle().
+			Foreground(ColorWhite).
+			Bold(true).
+			Render("Get started in seconds:")
 
-	// Random tip (OpenCode-inspired).
-	tips := []string{
-		"Tab completes commands and symbols",
-		"Press Esc for vim NORMAL mode, j/k to scroll",
-		"/chart BTC shows a sparkline chart",
-		"/snapshot shows a combined dashboard",
-		"/alert BTC > 100000 sets a background alert",
-		"/model to switch between AI providers",
-		"/theme to change the color scheme",
-		"Up/Down arrow cycles through command history",
-		"/man <command> shows detailed manual pages",
-		":e <file> opens a file in your editor",
+		helpHint = CommandStyle.Render("  /config init") +
+			DimStyle.Render("  — create your account (free, instant)")
+
+		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
+			DimStyle.Render("Then try ") +
+			CommandStyle.Render("/status") +
+			DimStyle.Render(", ") +
+			CommandStyle.Render("/price BTC") +
+			DimStyle.Render(", or just ask me anything.")
+	} else {
+		// Returning user: normal CTA + random tip.
+		ctaLine = lipgloss.NewStyle().
+			Foreground(ColorWhite).
+			Render("Tell me what you want to build, or try a command.")
+
+		helpHint = DimStyle.Render("Type ") +
+			CommandStyle.Render("/help") +
+			DimStyle.Render(" for commands, or ") +
+			CommandStyle.Render("?") +
+			DimStyle.Render(" for keyboard shortcuts.")
+
+		tips := []string{
+			"Tab completes commands and symbols",
+			"Press Esc for vim NORMAL mode, j/k to scroll",
+			"/chart BTC shows a sparkline chart",
+			"/snapshot shows a combined dashboard",
+			"/alert BTC > 100000 sets a background alert",
+			"/mcp search to browse trading integrations",
+			"/model to switch between AI providers",
+			"/theme to change the color scheme",
+			"Up/Down arrow cycles through command history",
+			"/man <command> shows detailed manual pages",
+		}
+		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
+			DimStyle.Render("Tip: "+tips[rand.Intn(len(tips))])
 	}
-	tip := lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
-		DimStyle.Render("Tip: "+tips[rand.Intn(len(tips))])
 
 	// Assemble inner content.
 	var inner []string

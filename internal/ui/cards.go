@@ -20,8 +20,10 @@ import (
 
 func connectPrompt() string {
 	return DimStyle.Render("  No API key configured. ") +
-		"Connect your account with " +
-		CommandStyle.Render("/config set api_key <key>")
+		"Run " + CommandStyle.Render("/config init") +
+		DimStyle.Render(" to create an account, or ") +
+		CommandStyle.Render("/config set api_key <key>") +
+		DimStyle.Render(" if you have one.")
 }
 
 // --- /agents: mock fallback or live orders ---
@@ -353,8 +355,15 @@ func RenderConfigInit(apiKey, userName string) string {
 		"  " + DimStyle.Render("User:    ") + userName,
 		"  " + DimStyle.Render("API Key: ") + maskKeyShort(apiKey),
 		"",
-		"  " + DimStyle.Render("You're ready to go. Try ") +
-			CommandStyle.Render("/status") + DimStyle.Render(" or just ask me anything."),
+		"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render("What's next?"),
+		"",
+		"  " + CommandStyle.Render("/status") + DimStyle.Render("              — check your portfolio"),
+		"  " + CommandStyle.Render("/price BTC ETH") + DimStyle.Render("       — live price quotes"),
+		"  " + CommandStyle.Render("/mcp search") + DimStyle.Render("          — browse trading integrations"),
+		"  " + CommandStyle.Render("/config set anthropic_key <key>"),
+		"    " + DimStyle.Render("                     — enable AI chat with your own key"),
+		"",
+		"  " + DimStyle.Render("Or just type naturally — ask me anything."),
 	}
 	return strings.Join(lines, "\n")
 }
@@ -363,7 +372,7 @@ func RenderConfigInit(apiKey, userName string) string {
 
 // RenderMCPHelp shows available /mcp subcommands.
 func RenderMCPHelp() string {
-	header := SecondaryStyle.Render("  /mcp usage\n")
+	header := SecondaryStyle.Render("  /mcp — manage trading integrations\n")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/mcp list") + DimStyle.Render("                — show connected servers & tools"),
@@ -371,6 +380,9 @@ func RenderMCPHelp() string {
 		"  " + CommandStyle.Render("/mcp info <name>") + DimStyle.Render("         — details on a server"),
 		"  " + CommandStyle.Render("/mcp add <name>") + DimStyle.Render("          — install a server from registry"),
 		"  " + CommandStyle.Render("/mcp remove <name>") + DimStyle.Render("       — disconnect a server"),
+		"",
+		DimStyle.Render("  Try: ") + CommandStyle.Render("/mcp search trading") +
+			DimStyle.Render("  or  ") + CommandStyle.Render("/mcp search defi"),
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1223,50 +1235,57 @@ func RenderTradeConfirmCard(req *api.PlaceOrderRequest, width int) string {
 func RenderHelp() string {
 	header := SecondaryStyle.Render("  NickAI Commands\n")
 
-	cmds := []struct{ cmd, desc string }{
-		{"/help", "Show this help message"},
-		{"/status", "Portfolio, positions & cash"},
-		{"/orders", "Recent orders & trades"},
-		{"/agents", "List your trading agents"},
-		{"/templates", "Browse marketplace templates"},
-		{"/buy BTC 0.1", "Market buy"},
-		{"/sell ETH 1.0", "Market sell"},
-		{"/buy BTC 0.1 limit 65000", "Limit buy at price"},
-		{"/price BTC ETH", "Live price quotes"},
-		{"/watch BTC ETH SOL", "Live price dashboard"},
-		{"/snapshot", "Combined portfolio dashboard"},
-		{"/market", "Full market overview (10 assets)"},
-		{"/pnl", "Profit & loss summary"},
-		{"/history", "Trade journal with all orders"},
-		{"/chart BTC", "ASCII sparkline chart"},
-		{"/alert BTC > 100000", "Set a price alert"},
-		{"/mcp list", "Show connected MCP servers"},
-		{"/mcp search", "Browse available MCP servers"},
-		{"/mcp add <name>", "Install an MCP server"},
-		{"/credential list", "Manage exchange API keys"},
-		{"/workflow list", "Manage automation workflows"},
-		{"/logs <workflow>", "Workflow execution logs"},
-		{"/man <command>", "Detailed manual pages"},
-		{"/model <id>", "Switch AI model"},
-		{"/theme <name>", "Switch color theme"},
-		{"/config init", "Auto-provision API key"},
-		{"/config", "Manage API key & connection"},
-		{"/clear", "Clear chat history"},
-		{"/quit", "Exit NickAI"},
+	sectionHeader := func(title string) string {
+		return "\n  " + lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(title)
+	}
+	cmdLine := func(cmd, desc string) string {
+		return "  " + CommandStyle.Render(padRight(cmd, 28)) + DimStyle.Render(desc)
 	}
 
 	var lines []string
 	lines = append(lines, header)
-	for _, c := range cmds {
-		line := CommandStyle.Render(padRight(c.cmd, 28)) + DimStyle.Render(c.desc)
-		lines = append(lines, "  "+line)
-	}
+
+	lines = append(lines, sectionHeader("Trading"))
+	lines = append(lines, cmdLine("/buy BTC 0.1", "Market buy"))
+	lines = append(lines, cmdLine("/sell ETH 1.0", "Market sell"))
+	lines = append(lines, cmdLine("/buy BTC 0.1 limit 65000", "Limit buy at price"))
+	lines = append(lines, cmdLine("/price BTC ETH", "Live price quotes"))
+	lines = append(lines, cmdLine("/watch BTC ETH SOL", "Live price dashboard"))
+	lines = append(lines, cmdLine("/alert BTC > 100000", "Set a price alert"))
+
+	lines = append(lines, sectionHeader("Portfolio"))
+	lines = append(lines, cmdLine("/status", "Positions & cash balance"))
+	lines = append(lines, cmdLine("/orders", "Recent orders & trades"))
+	lines = append(lines, cmdLine("/snapshot", "Combined portfolio dashboard"))
+	lines = append(lines, cmdLine("/market", "Full market overview (10 assets)"))
+	lines = append(lines, cmdLine("/pnl", "Profit & loss summary"))
+	lines = append(lines, cmdLine("/history", "Trade journal with all orders"))
+	lines = append(lines, cmdLine("/chart BTC", "ASCII sparkline chart"))
+
+	lines = append(lines, sectionHeader("Agents & Automation"))
+	lines = append(lines, cmdLine("/agents", "List your trading agents"))
+	lines = append(lines, cmdLine("/templates", "Browse marketplace templates"))
+	lines = append(lines, cmdLine("/workflow", "Manage automation workflows"))
+	lines = append(lines, cmdLine("/logs <workflow>", "Workflow execution logs"))
+
+	lines = append(lines, sectionHeader("Setup & Integrations"))
+	lines = append(lines, cmdLine("/config init", "Create account & API key"))
+	lines = append(lines, cmdLine("/config", "Manage settings & keys"))
+	lines = append(lines, cmdLine("/mcp", "MCP server integrations"))
+	lines = append(lines, cmdLine("/credential", "Exchange API keys"))
+	lines = append(lines, cmdLine("/model <id>", "Switch AI model"))
+	lines = append(lines, cmdLine("/theme <name>", "Switch color theme"))
+
+	lines = append(lines, sectionHeader("General"))
+	lines = append(lines, cmdLine("/help", "Show this help"))
+	lines = append(lines, cmdLine("/man <command>", "Detailed manual pages"))
+	lines = append(lines, cmdLine("/clear", "Clear chat history"))
+	lines = append(lines, cmdLine("/quit", "Exit NickAI"))
 
 	lines = append(lines, "")
 	lines = append(lines, DimStyle.Render("  Use ")+
 		CommandStyle.Render("/man <command>")+
-		DimStyle.Render(" for detailed docs."))
-	lines = append(lines, DimStyle.Render("  Or just type naturally — ask me to create, deploy, or manage agents."))
+		DimStyle.Render(" for detailed docs. Or just type naturally."))
 	return strings.Join(lines, "\n")
 }
 

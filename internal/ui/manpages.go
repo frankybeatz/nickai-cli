@@ -319,7 +319,7 @@ Requires a configured API key.`,
 	},
 	"alert": {
 		name:     "alert - set price alerts",
-		synopsis: "/alert <SYMBOL> <> | <>> <PRICE>",
+		synopsis: "/alert <SYMBOL> > <PRICE>  or  /alert <SYMBOL> < <PRICE>",
 		desc: `Set a background price alert that triggers when a symbol
 crosses a target price. Alerts are checked every 30 seconds.
 
@@ -529,6 +529,7 @@ func RenderManIndex() string {
 		{"model", "Switch AI model"},
 		{"theme", "Switch color theme"},
 		{"config", "Manage configuration"},
+		{"mcp", "MCP server integrations"},
 		{"credential", "Manage exchange API keys"},
 		{"workflow", "Manage automation workflows"},
 		{"logs", "Workflow execution logs"},

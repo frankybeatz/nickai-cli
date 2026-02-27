@@ -24,6 +24,7 @@ const (
 type DialogState struct {
 	Active       DialogType
 	Cursor       int
+	ScrollOffset int      // first visible index in scrollable lists
 	Filter       string
 	FilteredList []string // cached filtered items for palette
 }
@@ -137,7 +138,7 @@ func compositeOverlay(base string, dialog string, screenW, screenH int) string {
 func renderHelpDialog(screenW, screenH int) string {
 	col1Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Navigation")
 	col2Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Trading")
-	col3Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Data & Config")
+	col3Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Setup & Tools")
 
 	dim := DimStyle.Render
 	key := func(k string) string {
@@ -162,31 +163,31 @@ func renderHelpDialog(screenW, screenH int) string {
 	col2 := []string{
 		col2Header,
 		"",
-		key("/buy") + dim("    Market buy"),
-		key("/sell") + dim("   Limit sell"),
-		key("/price") + dim("  Price quotes"),
-		key("/watch") + dim("  Live dashboard"),
-		key("/chart") + dim("  Sparkline chart"),
-		key("/alert") + dim("  Price alerts"),
-		key("/status") + dim(" Portfolio"),
-		key("/orders") + dim(" Recent trades"),
-		key("/pnl") + dim("    Profit & loss"),
-		key("/agents") + dim(" Agent list"),
+		key("/buy") + dim("       Market buy"),
+		key("/sell") + dim("      Limit sell"),
+		key("/price") + dim("     Price quotes"),
+		key("/watch") + dim("     Live dashboard"),
+		key("/chart") + dim("     Sparkline chart"),
+		key("/alert") + dim("     Price alerts"),
+		key("/status") + dim("    Portfolio"),
+		key("/orders") + dim("    Recent trades"),
+		key("/pnl") + dim("       Profit & loss"),
+		key("/snapshot") + dim("  Full dashboard"),
 	}
 
 	col3 := []string{
 		col3Header,
 		"",
+		key("/config") + dim("      Settings & API keys"),
+		key("/mcp") + dim("         MCP integrations"),
+		key("/credential") + dim("  Exchange API keys"),
+		key("/workflow") + dim("    Automations"),
+		key("/model") + dim("       Switch LLM"),
+		"",
 		key("Ctrl+K") + dim("  Command palette"),
 		key("Ctrl+T") + dim("  Theme picker"),
 		key("Ctrl+O") + dim("  Model selector"),
-		key("/snapshot") + dim("  Dashboard"),
-		key("/market") + dim("    Market overview"),
-		key("/history") + dim("   Trade journal"),
-		key("/workflow") + dim("  Workflows"),
-		key("/config") + dim("    Settings"),
-		key("/man") + dim("       Manual pages"),
-		key("/model") + dim("     Switch LLM"),
+		key("/help") + dim("       All commands"),
 	}
 
 	colWidth := 28
@@ -301,7 +302,7 @@ func renderModelDialog(cursor int, agent *ai.Agent, screenW, screenH int) string
 
 // ── Command Palette Dialog ──
 
-func renderPaletteDialog(cursor int, filter string, filtered []string, screenW, screenH int) string {
+func renderPaletteDialog(cursor, scrollOffset int, filter string, filtered []string, screenW, screenH int) string {
 	// Search input.
 	searchIcon := lipgloss.NewStyle().Foreground(ColorSecondary).Render("⌕ ")
 	filterDisplay := filter
@@ -317,8 +318,13 @@ func renderPaletteDialog(cursor int, filter string, filtered []string, screenW, 
 	rows = append(rows, searchLine)
 	rows = append(rows, DimStyle.Render(strings.Repeat("─", 36)))
 
-	maxVisible := min(len(filtered), 12)
-	for i := 0; i < maxVisible; i++ {
+	maxVisible := 12
+	endIdx := scrollOffset + maxVisible
+	if endIdx > len(filtered) {
+		endIdx = len(filtered)
+	}
+
+	for i := scrollOffset; i < endIdx; i++ {
 		entry := filtered[i]
 		prefix := "  "
 		if i == cursor {
@@ -336,7 +342,7 @@ func renderPaletteDialog(cursor int, filter string, filtered []string, screenW, 
 		if i == cursor {
 			cmdStyle = cmdStyle.Foreground(ColorPrimary)
 		}
-		row := prefix + cmdStyle.Render(fmt.Sprintf("%-14s", cmd)) + DimStyle.Render(desc)
+		row := prefix + cmdStyle.Render(fmt.Sprintf("%-16s", cmd)) + DimStyle.Render(desc)
 		rows = append(rows, row)
 	}
 
@@ -344,11 +350,30 @@ func renderPaletteDialog(cursor int, filter string, filtered []string, screenW, 
 		rows = append(rows, DimStyle.Render("  No matching commands"))
 	}
 
+	// Show count indicator when there are more items.
+	visibleCount := endIdx - scrollOffset
+	if len(filtered) > maxVisible {
+		remaining := len(filtered) - endIdx
+		above := scrollOffset
+		var scrollHint string
+		if above > 0 && remaining > 0 {
+			scrollHint = fmt.Sprintf("↑ %d above  ↓ %d below", above, remaining)
+		} else if remaining > 0 {
+			scrollHint = fmt.Sprintf("↓ %d more", remaining)
+		} else if above > 0 {
+			scrollHint = fmt.Sprintf("↑ %d above", above)
+		}
+		rows = append(rows, DimStyle.Render("  "+scrollHint))
+	}
+
 	footer := "\n" + DimStyle.Render("↑/↓ navigate  Enter run  Esc cancel")
 	content := strings.Join(rows, "\n") + footer
 
 	dialogW := min(screenW-4, 52)
-	dialogH := maxVisible + 7
+	dialogH := visibleCount + 7
+	if len(filtered) > maxVisible {
+		dialogH++ // extra line for scroll hint
+	}
 	return overlayFrame("Commands", content, dialogW, dialogH, screenW, screenH)
 }
 
@@ -374,11 +399,13 @@ var paletteCommands = []string{
 	"/alert|Set price alerts",
 	"/model|Switch AI model",
 	"/theme|Switch color theme",
-	"/mcp list|Connected MCP servers",
-	"/mcp search|Browse MCP directory",
-	"/mcp add|Install MCP server",
+	"/mcp list|Connected MCP servers & tools",
+	"/mcp search|Browse MCP server directory",
+	"/mcp add|Install an MCP server",
+	"/mcp info|Details on an MCP server",
+	"/mcp remove|Disconnect an MCP server",
 	"/config|Manage settings",
-	"/config init|Auto-provision API key",
+	"/config init|Create account & API key",
 	"/man|Manual pages",
 	"/clear|Clear chat",
 	"/quit|Exit NickAI",

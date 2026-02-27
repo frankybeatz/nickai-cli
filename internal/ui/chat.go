@@ -541,7 +541,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, vpHeight)
 			m.viewport.MouseWheelEnabled = false
-			m.viewport.SetContent(RenderWelcome(msg.Width))
+			m.viewport.SetContent(RenderWelcome(msg.Width, m.client.IsConfigured()))
 			m.ready = true
 		} else {
 			m.viewport.Width = msg.Width
@@ -660,7 +660,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case commands.TypeClear:
 			m.messages = nil
-			m.viewport.SetContent(RenderWelcome(m.width))
+			m.viewport.SetContent(RenderWelcome(m.width, m.client.IsConfigured()))
 			m.viewport.GotoBottom()
 			return m, nil
 
@@ -973,7 +973,7 @@ func (m Model) executeVimCommand(cmd string) (tea.Model, tea.Cmd) {
 
 	case "clear":
 		m.messages = nil
-		m.viewport.SetContent(RenderWelcome(m.width))
+		m.viewport.SetContent(RenderWelcome(m.width, m.client.IsConfigured()))
 		m.viewport.GotoBottom()
 		return m, nil
 
@@ -1232,15 +1232,18 @@ func (m Model) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyUp:
 			if m.dialog.Cursor > 0 {
 				m.dialog.Cursor--
+				if m.dialog.Cursor < m.dialog.ScrollOffset {
+					m.dialog.ScrollOffset = m.dialog.Cursor
+				}
 			}
 			return m, nil
 		case tea.KeyDown:
 			maxIdx := len(m.dialog.FilteredList) - 1
-			if maxIdx > 11 {
-				maxIdx = 11
-			}
 			if m.dialog.Cursor < maxIdx {
 				m.dialog.Cursor++
+				if m.dialog.Cursor >= m.dialog.ScrollOffset+12 {
+					m.dialog.ScrollOffset = m.dialog.Cursor - 11
+				}
 			}
 			return m, nil
 		case tea.KeyEnter:
@@ -1260,17 +1263,20 @@ func (m Model) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.dialog.Filter = m.dialog.Filter[:len(m.dialog.Filter)-1]
 				m.dialog.FilteredList = filterPaletteCommands(m.dialog.Filter)
 				m.dialog.Cursor = 0
+				m.dialog.ScrollOffset = 0
 			}
 			return m, nil
 		case tea.KeyRunes:
 			m.dialog.Filter += msg.String()
 			m.dialog.FilteredList = filterPaletteCommands(m.dialog.Filter)
 			m.dialog.Cursor = 0
+			m.dialog.ScrollOffset = 0
 			return m, nil
 		case tea.KeySpace:
 			m.dialog.Filter += " "
 			m.dialog.FilteredList = filterPaletteCommands(m.dialog.Filter)
 			m.dialog.Cursor = 0
+			m.dialog.ScrollOffset = 0
 			return m, nil
 		}
 		return m, nil
@@ -2248,7 +2254,7 @@ func home() string {
 
 func (m *Model) updateViewport() {
 	if len(m.messages) == 0 {
-		content := RenderWelcome(m.width)
+		content := RenderWelcome(m.width, m.client.IsConfigured())
 		m.viewContent = content
 		m.viewport.SetContent(content)
 		return
@@ -2261,7 +2267,7 @@ func (m *Model) updateViewport() {
 		m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick: ") + frame + " " + text
 	}
 
-	welcome := RenderWelcome(m.width)
+	welcome := RenderWelcome(m.width, m.client.IsConfigured())
 	var parts []string
 	parts = append(parts, welcome)
 	for _, msg := range m.messages {
@@ -2362,7 +2368,7 @@ func (m Model) View() string {
 		case DialogModel:
 			dialog = renderModelDialog(m.dialog.Cursor, m.agent, m.width, m.height)
 		case DialogPalette:
-			dialog = renderPaletteDialog(m.dialog.Cursor, m.dialog.Filter, m.dialog.FilteredList, m.width, m.height)
+			dialog = renderPaletteDialog(m.dialog.Cursor, m.dialog.ScrollOffset, m.dialog.Filter, m.dialog.FilteredList, m.width, m.height)
 		}
 		if dialog != "" {
 			return compositeOverlay(base, dialog, m.width, m.height)
@@ -2426,32 +2432,51 @@ func (m Model) renderBootSequence() string {
 	checksStart := taglineStart + len(m.bootTagline) + 1
 	type bootCheck struct {
 		label string
+		ok    bool
 	}
+
+	hasAPI := m.client.IsConfigured()
+	hasAnthropicKey := m.cfg.AnthropicKey != ""
+	hasMCP := m.mcpManager != nil && m.mcpManager.ConnectionCount() > 0
+
 	checks := []bootCheck{
-		{"Connected"},
-		{"Paper trading active"},
-		{"AI agent ready"},
-		{"Vim mode enabled"},
+		{"API connected", hasAPI},
+		{"Paper trading active", hasAPI},
+		{"AI agent ready", hasAnthropicKey},
 	}
+	if hasMCP {
+		checks = append(checks, bootCheck{
+			fmt.Sprintf("MCP servers (%d)", m.mcpManager.ConnectionCount()), true,
+		})
+	}
+	checks = append(checks, bootCheck{"Vim mode enabled", true})
+
+	warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF9900"))
 
 	for i, check := range checks {
 		checkFrame := checksStart + i*2
 		if m.bootFrame >= checkFrame+1 {
-			// Completed — green checkmark.
-			lines = append(lines, pad+"  "+checkStyle.Render("✓ "+check.label))
+			if check.ok {
+				lines = append(lines, pad+"  "+checkStyle.Render("✓ "+check.label))
+			} else {
+				lines = append(lines, pad+"  "+warnStyle.Render("○ "+check.label)+DimStyle.Render("  (not configured)"))
+			}
 		} else if m.bootFrame >= checkFrame {
-			// Spinning.
 			spinIdx := m.bootFrame % len(spinnerFrames)
 			spinner := lipgloss.NewStyle().Foreground(ColorSecondary).Render(spinnerFrames[spinIdx])
 			lines = append(lines, pad+"  "+spinner+" "+DimStyle.Render(check.label+"..."))
 		}
 	}
 
-	// Phase 4: Ready message.
+	// Phase 4: Ready message — context-aware.
 	readyFrame := checksStart + len(checks)*2
 	if m.bootFrame >= readyFrame {
 		lines = append(lines, "")
-		lines = append(lines, pad+DimStyle.Render("  Ready. Type /help or just ask me anything."))
+		if !hasAPI {
+			lines = append(lines, pad+"  "+DimStyle.Render("Run ")+CommandStyle.Render("/config init")+DimStyle.Render(" to get started."))
+		} else {
+			lines = append(lines, pad+DimStyle.Render("  Ready. Type /help or just ask me anything."))
+		}
 	}
 
 	content := strings.Join(lines, "\n")
