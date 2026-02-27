@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -113,6 +114,38 @@ type apiErrorResponse struct {
 		Type    string `json:"type"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// --- Streaming SSE types ---
+
+type streamAPIRequest struct {
+	Model     string        `json:"model"`
+	MaxTokens int           `json:"max_tokens"`
+	System    string        `json:"system"`
+	Tools     []toolDef     `json:"tools"`
+	Messages  []chatMessage `json:"messages"`
+	Stream    bool          `json:"stream"`
+}
+
+type sseContentBlock struct {
+	Type string `json:"type"`
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+	Text string `json:"text,omitempty"`
+}
+
+type sseDelta struct {
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
+}
+
+type sseEvent struct {
+	Type         string           `json:"type"`
+	Index        int              `json:"index"`
+	ContentBlock *sseContentBlock `json:"content_block,omitempty"`
+	Delta        *sseDelta        `json:"delta,omitempty"`
 }
 
 // --- Tool input types ---
@@ -398,6 +431,8 @@ func (a *Agent) chatMiniMax(userMessage string) (string, error) {
 // callAnthropic sends the current conversation to the Anthropic API.
 // Retries up to maxRetries times on transient errors (connection resets, 5xx).
 func (a *Agent) callAnthropic() (*apiResponse, error) {
+	a.sanitizeHistory()
+
 	reqBody := apiRequest{
 		Model:     modelAPIName(a.modelID),
 		MaxTokens: maxTokens,
@@ -542,4 +577,204 @@ func toJSON(v any) string {
 
 func errorJSON(msg string) string {
 	return fmt.Sprintf(`{"error": %q}`, msg)
+}
+
+// --- Streaming ---
+
+// ChatStream sends a user message and streams text tokens through tokenCh.
+// Returns the final complete response text. Tool-use rounds are handled
+// internally. MiniMax falls back to non-streaming.
+func (a *Agent) ChatStream(userMessage string, tokenCh chan<- string) (string, error) {
+	if a.provider == ProviderMiniMax {
+		resp, err := a.chatMiniMax(userMessage)
+		if err != nil {
+			return "", err
+		}
+		tokenCh <- resp
+		return resp, nil
+	}
+
+	a.history = append(a.history, chatMessage{
+		Role:    "user",
+		Content: userMessage,
+	})
+
+	for range maxToolRounds {
+		resp, err := a.callAnthropicStream(tokenCh)
+		if err != nil {
+			return "", err
+		}
+
+		a.history = append(a.history, chatMessage{
+			Role:    "assistant",
+			Content: resp.Content,
+		})
+
+		var toolUses []contentBlock
+		for _, block := range resp.Content {
+			if block.Type == "tool_use" {
+				toolUses = append(toolUses, block)
+			}
+		}
+
+		if len(toolUses) == 0 {
+			return extractText(resp.Content), nil
+		}
+
+		var results []toolResultBlock
+		for _, tu := range toolUses {
+			result := a.executeTool(tu.Name, tu.Input)
+			results = append(results, toolResultBlock{
+				Type:      "tool_result",
+				ToolUseID: tu.ID,
+				Content:   result,
+			})
+		}
+
+		a.history = append(a.history, chatMessage{
+			Role:    "user",
+			Content: results,
+		})
+	}
+
+	return "", fmt.Errorf("agent exceeded maximum tool rounds (%d)", maxToolRounds)
+}
+
+// sanitizeHistory ensures every tool_use block in the conversation history
+// has a non-nil Input field. The Anthropic API rejects requests where
+// tool_use blocks lack the "input" field.
+func (a *Agent) sanitizeHistory() {
+	for i := range a.history {
+		blocks, ok := a.history[i].Content.([]contentBlock)
+		if !ok {
+			continue
+		}
+		for j := range blocks {
+			if blocks[j].Type == "tool_use" && len(blocks[j].Input) == 0 {
+				blocks[j].Input = json.RawMessage("{}")
+			}
+		}
+	}
+}
+
+// callAnthropicStream sends a streaming request to the Anthropic API.
+// Text tokens are sent via tokenCh as they arrive. Returns the
+// accumulated response (including any tool_use blocks).
+func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error) {
+	a.sanitizeHistory()
+
+	reqBody := streamAPIRequest{
+		Model:     modelAPIName(a.modelID),
+		MaxTokens: maxTokens,
+		System:    systemPrompt,
+		Tools:     tools,
+		Messages:  a.history,
+		Stream:    true,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", anthropicURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("x-api-key", a.apiKey)
+	req.Header.Set("anthropic-version", anthropicVersion)
+	req.Header.Set("content-type", "application/json")
+
+	// Longer timeout for streaming (responses can be lengthy).
+	streamClient := &http.Client{
+		Timeout: 120 * time.Second,
+		Transport: &http.Transport{
+			DisableKeepAlives: true,
+		},
+	}
+
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("stream request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(resp.Body)
+		var errResp apiErrorResponse
+		if err := json.Unmarshal(respBody, &errResp); err == nil && errResp.Error.Message != "" {
+			return nil, fmt.Errorf("Anthropic API %d: %s", resp.StatusCode, errResp.Error.Message)
+		}
+		return nil, fmt.Errorf("Anthropic API %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse SSE stream.
+	var blocks []contentBlock
+	toolInputBufs := make(map[int]*strings.Builder)
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+
+		var event sseEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			continue
+		}
+
+		switch event.Type {
+		case "content_block_start":
+			if event.ContentBlock != nil {
+				block := contentBlock{
+					Type: event.ContentBlock.Type,
+					ID:   event.ContentBlock.ID,
+					Name: event.ContentBlock.Name,
+				}
+				if event.ContentBlock.Type == "tool_use" {
+					// Default to empty object — tools with no params
+					// may not send any input_json_delta events.
+					block.Input = json.RawMessage("{}")
+					toolInputBufs[event.Index] = &strings.Builder{}
+				}
+				blocks = append(blocks, block)
+			}
+
+		case "content_block_delta":
+			if event.Delta != nil {
+				switch event.Delta.Type {
+				case "text_delta":
+					if event.Delta.Text != "" && event.Index < len(blocks) {
+						blocks[event.Index].Text += event.Delta.Text
+						tokenCh <- event.Delta.Text
+					}
+				case "input_json_delta":
+					if buf, ok := toolInputBufs[event.Index]; ok {
+						buf.WriteString(event.Delta.PartialJSON)
+					}
+				}
+			}
+
+		case "content_block_stop":
+			if buf, ok := toolInputBufs[event.Index]; ok {
+				if event.Index < len(blocks) && buf.Len() > 0 {
+					blocks[event.Index].Input = json.RawMessage(buf.String())
+				}
+				delete(toolInputBufs, event.Index)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("stream read error: %w", err)
+	}
+
+	return &apiResponse{
+		Role:    "assistant",
+		Content: blocks,
+	}, nil
 }

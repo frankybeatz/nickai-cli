@@ -22,6 +22,26 @@ Type "/tmp/nickai-demo"
 Enter
 Sleep 8s
 
+# Feature 1: Auto-provisioning — frictionless onboarding.
+Type "/config init"
+Enter
+Sleep 3s
+
+# Feature 2: Streaming AI — tokens appear word-by-word.
+Type "what is bitcoin? keep it to 3 sentences"
+Enter
+Sleep 10s
+
+# Feature 3: Streaming with tool use — auto price lookup.
+Type "check the price of BTC and ETH and tell me which is a better buy"
+Enter
+Sleep 12s
+
+# Show markdown rendering in a structured response.
+Type "give me a quick bull vs bear case for SOL as a markdown list"
+Enter
+Sleep 12s
+
 # Show command palette (Ctrl+K).
 Ctrl+K
 Sleep 2s
@@ -90,11 +110,6 @@ Sleep 1s
 Type "/alert BTC > 100000"
 Enter
 Sleep 2s
-
-# Chat with AI.
-Type "analyze the current market sentiment for ETH"
-Enter
-Sleep 6s
 
 # Scroll up in normal mode.
 Escape

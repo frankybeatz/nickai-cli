@@ -60,10 +60,21 @@ type bootTickMsg struct{}
 // spinnerTickMsg advances the loading spinner.
 type spinnerTickMsg struct{}
 
-// aiResponseMsg carries the result of an async AI call.
+// aiResponseMsg carries the result of an async AI call (non-streaming fallback).
 type aiResponseMsg struct {
 	response string
 	err      error
+}
+
+// aiStreamMsg carries a partial token from streaming.
+type aiStreamMsg struct {
+	token string
+}
+
+// aiStreamDoneMsg signals end of streaming with the final complete text.
+type aiStreamDoneMsg struct {
+	finalContent string
+	err          error
 }
 
 // apiResponseMsg carries the result of an async API command.
@@ -146,6 +157,10 @@ type Model struct {
 	loading      bool
 	loadingFrame int
 	loadingText  string
+
+	// Streaming state.
+	streaming bool
+	streamCh  chan string
 
 	// Tab completion state.
 	completionCandidates []string
@@ -313,7 +328,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.err != nil {
 				m.messages[len(m.messages)-1].content = ErrorStyle.Render("  AI error: ") + msg.err.Error()
 			} else {
-				m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick: ") + msg.response
+				rendered := renderMarkdown(msg.response, m.width-8)
+				m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick:") + "\n" + rendered
+			}
+		}
+		m.updateViewport()
+		return m, nil
+
+	case aiStreamMsg:
+		if m.streaming && len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+			lastMsg := &m.messages[len(m.messages)-1]
+			if m.loading {
+				// First token: replace spinner with nick prefix.
+				m.loading = false
+				lastMsg.content = BotMsgStyle.Render("nick: ") + msg.token
+			} else {
+				lastMsg.content += msg.token
+			}
+			m.updateViewport()
+		}
+		if m.streamCh != nil {
+			return m, waitForStreamToken(m.streamCh)
+		}
+		return m, nil
+
+	case aiStreamDoneMsg:
+		m.loading = false
+		m.streaming = false
+		m.streamCh = nil
+		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+			if msg.err != nil {
+				m.messages[len(m.messages)-1].content = ErrorStyle.Render("  AI error: ") + msg.err.Error()
+			} else {
+				rendered := renderMarkdown(msg.finalContent, m.width-8)
+				m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick:") + "\n" + rendered
 			}
 		}
 		m.updateViewport()
@@ -499,9 +547,20 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyTab:
+		// If suggestions are visible, select the highlighted one.
+		if len(m.completionCandidates) > 0 {
+			return m.selectSuggestion()
+		}
 		return m.handleTabCompletion()
 
 	case tea.KeyUp:
+		// Navigate suggestions if visible.
+		if len(m.completionCandidates) > 0 {
+			if m.completionIndex > 0 {
+				m.completionIndex--
+			}
+			return m, nil
+		}
 		if len(m.inputHistory) == 0 {
 			return m, nil
 		}
@@ -516,6 +575,17 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyDown:
+		// Navigate suggestions if visible.
+		if len(m.completionCandidates) > 0 {
+			max := len(m.completionCandidates) - 1
+			if max > 9 {
+				max = 9
+			}
+			if m.completionIndex < max {
+				m.completionIndex++
+			}
+			return m, nil
+		}
 		if m.historyIndex == -1 {
 			return m, nil
 		}
@@ -530,6 +600,10 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyEnter:
+		// If suggestions are visible, select the highlighted one instead of submitting.
+		if len(m.completionCandidates) > 0 {
+			return m.selectSuggestion()
+		}
 		m.completionCandidates = nil
 		m.historyIndex = -1
 		input := strings.TrimSpace(m.textInput.Value())
@@ -565,7 +639,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case commands.TypeChat:
-			// Async AI call with loading spinner.
+			// Streaming AI call with loading spinner.
 			if m.agent == nil {
 				m.addBotMessage(BotMsgStyle.Render("nick: ") +
 					"I need an Anthropic API key to chat. Set one with " +
@@ -575,18 +649,23 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.loading = true
+			m.streaming = true
 			m.loadingFrame = 0
 			m.loadingText = "Thinking..."
 			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
 			m.updateViewport()
+			tokenCh := make(chan string, 100)
+			m.streamCh = tokenCh
 			agent := m.agent
 			userInput := result.Input
 			return m, tea.Batch(
 				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 				func() tea.Msg {
-					resp, err := agent.Chat(userInput)
-					return aiResponseMsg{response: resp, err: err}
+					defer close(tokenCh)
+					resp, err := agent.ChatStream(userInput, tokenCh)
+					return aiStreamDoneMsg{finalContent: resp, err: err}
 				},
+				waitForStreamToken(tokenCh),
 			)
 
 		case commands.TypeBuy, commands.TypeSell:
@@ -648,12 +727,19 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Reset completion on any non-Tab key.
-	m.completionCandidates = nil
-
 	// Forward to textInput.
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
+
+	// Auto-show suggestions when typing a / command.
+	input := m.textInput.Value()
+	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
+		m.completionCandidates = filterSuggestions(input)
+		m.completionIndex = 0
+	} else {
+		m.completionCandidates = nil
+	}
+
 	return m, cmd
 }
 
@@ -1301,6 +1387,68 @@ func (m *Model) handleAlert(args []string) string {
 		DimStyle.Render("  (checking every 30s)")
 }
 
+// --- Helper: slash suggestion selection ---
+
+// selectSuggestion fills the input with the currently highlighted suggestion.
+func (m Model) selectSuggestion() (tea.Model, tea.Cmd) {
+	if m.completionIndex >= len(m.completionCandidates) {
+		return m, nil
+	}
+	entry := m.completionCandidates[m.completionIndex]
+	cmd := strings.SplitN(entry, "|", 2)[0]
+	m.textInput.SetValue(cmd + " ")
+	m.textInput.CursorEnd()
+	m.completionCandidates = nil
+	return m, nil
+}
+
+// composeSuggestions overlays the suggestion box above the input bar.
+func (m Model) composeSuggestions(base string) string {
+	boxWidth := min(m.width-4, 48)
+	box := renderSuggestionsBox(m.completionCandidates, m.completionIndex, boxWidth)
+	boxLines := strings.Split(box, "\n")
+	baseLines := strings.Split(base, "\n")
+
+	// Place the box ending just above the input bar (last 2 lines).
+	insertAt := len(baseLines) - 2 - len(boxLines)
+	if insertAt < 1 {
+		insertAt = 1
+	}
+
+	for i, bLine := range boxLines {
+		lineIdx := insertAt + i
+		if lineIdx >= 0 && lineIdx < len(baseLines) {
+			baseLines[lineIdx] = " " + bLine
+		}
+	}
+
+	return strings.Join(baseLines, "\n")
+}
+
+// --- Helper: streaming ---
+
+// waitForStreamToken returns a tea.Cmd that reads the next token from a
+// streaming channel. Returns nil when the channel is closed.
+func waitForStreamToken(ch <-chan string) tea.Cmd {
+	return func() tea.Msg {
+		token, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return aiStreamMsg{token: token}
+	}
+}
+
+// randomID generates a random alphanumeric string of length n.
+func randomID(n int) string {
+	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = chars[rand.Intn(len(chars))]
+	}
+	return string(b)
+}
+
 // --- Helper: add bot message ---
 
 func (m *Model) addBotMessage(content string) {
@@ -1440,7 +1588,8 @@ func (m *Model) renderResult(r commands.Result) string {
 			if err != nil {
 				return ErrorStyle.Render("  AI error: ") + err.Error()
 			}
-			return BotMsgStyle.Render("nick: ") + resp
+			rendered := renderMarkdown(resp, m.width-8)
+			return BotMsgStyle.Render("nick:") + "\n" + rendered
 		}
 		return BotMsgStyle.Render("nick: ") +
 			"I need an Anthropic API key to chat. Set one with " +
@@ -1460,6 +1609,30 @@ func (m *Model) handleConfig(args []string) string {
 
 	sub := strings.ToLower(args[0])
 	switch sub {
+	case "init":
+		// Auto-provision: create anonymous account and store API key.
+		if m.cfg.APIKey != "" {
+			return BotMsgStyle.Render("nick: ") + "API key already configured. " +
+				DimStyle.Render("Use ") + CommandStyle.Render("/config show") +
+				DimStyle.Render(" to view it.")
+		}
+		name := fmt.Sprintf("nickai-%s", randomID(8))
+		email := name + "@nickai.local"
+		baseURL := m.cfg.BaseURL
+		if baseURL == "" {
+			baseURL = "https://paper.getnick.ai/api/v1"
+		}
+		result, err := api.Register(baseURL, email, name)
+		if err != nil {
+			return ErrorStyle.Render("  Auto-provisioning failed: ") + err.Error()
+		}
+		m.cfg.APIKey = result.APIKey
+		if err := m.cfg.Save(); err != nil {
+			return ErrorStyle.Render("  Failed to save config: ") + err.Error()
+		}
+		m.client.UpdateConfig(m.cfg)
+		return RenderConfigInit(result.APIKey, result.User.Name)
+
 	case "show":
 		return RenderConfigShow(m.cfg)
 
@@ -1991,6 +2164,11 @@ func (m Model) View() string {
 	inputBar := m.renderInputBar()
 
 	base := topBar + "\n" + m.viewport.View() + "\n" + inputBar
+
+	// Slash command suggestions overlay.
+	if len(m.completionCandidates) > 0 && m.vimMode == ModeInsert {
+		base = m.composeSuggestions(base)
+	}
 
 	// Composite overlay dialog if active.
 	if m.dialog.Active != DialogNone {

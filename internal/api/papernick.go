@@ -275,3 +275,53 @@ func (c *PapernickClient) CancelOrder(id string) error {
 func (c *PapernickClient) TestConnection() (*User, error) {
 	return c.GetUser()
 }
+
+// --- Registration (no auth required) ---
+
+// RegisterResponse holds the result of user registration.
+type RegisterResponse struct {
+	APIKey string `json:"apiKey"`
+	User   User   `json:"user"`
+}
+
+// Register creates a new anonymous user and returns an API key.
+// This is a package-level function because no existing auth is needed.
+func Register(baseURL, email, name string) (*RegisterResponse, error) {
+	body := map[string]string{
+		"email": email,
+		"name":  name,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("POST", baseURL+"/auth/register", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("registration failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("registration failed (%d): %s", resp.StatusCode, string(respBody))
+	}
+
+	var result RegisterResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return &result, nil
+}

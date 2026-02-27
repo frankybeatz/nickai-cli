@@ -4,6 +4,20 @@ Conversational trading terminal for [NickAI](https://getnick.ai). Paper trade, d
 
 ![demo](demo.gif)
 
+## What's New
+
+### Streaming AI Responses
+
+AI responses now appear **token-by-token** as they're generated instead of blocking behind a spinner. The terminal feels alive — you see the AI thinking in real time. Tool-use rounds (price lookups, portfolio checks, trade execution) still work seamlessly: the stream pauses during tool execution and resumes when results are ready.
+
+### Markdown Rendering
+
+AI responses are rendered with full markdown formatting — **bold**, `inline code`, code blocks, lists, tables, and headings all display correctly in the terminal. Powered by [Glamour](https://github.com/charmbracelet/glamour).
+
+### One-Command Setup (`/config init`)
+
+New users no longer need to visit a website, create an account, and copy-paste an API key. Just run `/config init` and NickAI provisions an anonymous PaperNick account automatically, stores the key, and you're trading in seconds.
+
 ## Install
 
 ### Homebrew (macOS & Linux)
@@ -38,13 +52,29 @@ make release    # builds darwin/linux/windows × arm64/amd64 to build/
 
 Requires Go 1.23+.
 
+## Quick Start
+
+```
+# Auto-provision a PaperNick account (no signup required)
+/config init
+
+# Set your Anthropic key for AI chat
+/config set anthropic_key sk-ant-...
+
+# Start trading
+what's the price of BTC?
+/buy BTC 0.01
+/status
+```
+
 ## Configure
 
 ```
-/config set api_key <your-papernick-api-key>
-/config set anthropic_key <your-anthropic-api-key>
-/config set minimax_key <your-minimax-key>    # free model
-/config test
+/config init                               # auto-provision API key (new)
+/config set api_key <your-papernick-key>   # or set manually
+/config set anthropic_key <your-key>       # Claude AI
+/config set minimax_key <your-key>         # free model
+/config test                               # verify connection
 ```
 
 Or set keys via environment:
@@ -60,11 +90,13 @@ Config is stored at `~/.nickai/config.json`.
 
 Switch between AI providers with `/model`:
 
-| Model | Provider | Free |
-|---|---|---|
-| `claude-sonnet` | Anthropic | No |
-| `claude-haiku` | Anthropic | No |
-| `minimax` | MiniMax | Yes |
+| Model | Provider | Streaming | Free |
+|---|---|---|---|
+| `claude-sonnet` | Anthropic | Yes | No |
+| `claude-haiku` | Anthropic | Yes | No |
+| `minimax` | MiniMax | No | Yes |
+
+Anthropic models stream responses token-by-token with tool use. MiniMax returns the full response at once.
 
 ## Themes
 
@@ -77,6 +109,7 @@ Switch between AI providers with `/model`:
 | Command | Description |
 |---|---|
 | `/help` | Show all commands |
+| `/config init` | Auto-provision API key |
 | `/status` | Portfolio, positions & cash |
 | `/orders` | Recent orders & trades |
 | `/price BTC ETH` | Live price quotes |
@@ -101,7 +134,7 @@ Switch between AI providers with `/model`:
 | `/clear` | Clear chat |
 | `/quit` | Exit |
 
-Or just type naturally — the AI agent can check prices, analyze markets, and place trades for you.
+Or just type naturally — the AI agent can check prices, analyze markets, and place trades for you. Responses stream in real time with full markdown formatting.
 
 ## Vim Mode
 
@@ -144,7 +177,6 @@ See `examples/` for sample workflows.
 - All API communication over HTTPS
 - Credentials stored with `0600` permissions, masked in output
 - No telemetry, no auto-updates, no inbound network surface
-- Only 3 direct dependencies, all from [Charmbracelet](https://github.com/charmbracelet)
 
 See [SECURITY.md](SECURITY.md) for the full security policy and audit details.
 
@@ -152,6 +184,7 @@ See [SECURITY.md](SECURITY.md) for the full security policy and audit details.
 
 - [Bubbletea](https://github.com/charmbracelet/bubbletea) — TUI framework
 - [Lipgloss](https://github.com/charmbracelet/lipgloss) — Styling
+- [Glamour](https://github.com/charmbracelet/glamour) — Markdown rendering
 - [PaperNick API](https://paper.getnick.ai) — Paper trading
-- [Anthropic Claude](https://anthropic.com) — AI agent with tool use
+- [Anthropic Claude](https://anthropic.com) — AI agent with streaming tool use
 - [MiniMax](https://www.minimaxi.com) — Free LLM option

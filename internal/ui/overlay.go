@@ -375,9 +375,66 @@ var paletteCommands = []string{
 	"/model|Switch AI model",
 	"/theme|Switch color theme",
 	"/config|Manage settings",
+	"/config init|Auto-provision API key",
 	"/man|Manual pages",
 	"/clear|Clear chat",
 	"/quit|Exit NickAI",
+}
+
+// filterSuggestions returns palette commands matching a prefix (for the / menu).
+func filterSuggestions(prefix string) []string {
+	prefix = strings.ToLower(prefix)
+	var results []string
+	for _, entry := range paletteCommands {
+		cmd := strings.SplitN(entry, "|", 2)[0]
+		if strings.HasPrefix(strings.ToLower(cmd), prefix) {
+			results = append(results, entry)
+		}
+	}
+	return results
+}
+
+// renderSuggestionsBox renders a compact suggestion menu for the / command picker.
+func renderSuggestionsBox(candidates []string, cursor, boxWidth int) string {
+	maxVisible := len(candidates)
+	if maxVisible > 10 {
+		maxVisible = 10
+	}
+
+	var rows []string
+	for i := 0; i < maxVisible; i++ {
+		entry := candidates[i]
+		prefix := "  "
+		if i == cursor {
+			prefix = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("▸ ")
+		}
+
+		parts := strings.SplitN(entry, "|", 2)
+		cmd := parts[0]
+		desc := ""
+		if len(parts) > 1 {
+			desc = parts[1]
+		}
+
+		cmdStyle := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true)
+		if i == cursor {
+			cmdStyle = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
+		}
+		row := prefix + cmdStyle.Render(padRight(cmd, 16)) + DimStyle.Render(desc)
+		rows = append(rows, row)
+	}
+
+	if len(candidates) > maxVisible {
+		rows = append(rows, DimStyle.Render(fmt.Sprintf("  ... %d more", len(candidates)-maxVisible)))
+	}
+
+	content := strings.Join(rows, "\n")
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorDim).
+		Padding(0, 1).
+		Width(boxWidth).
+		Render(content)
 }
 
 // filterPaletteCommands filters the command list by a search string.

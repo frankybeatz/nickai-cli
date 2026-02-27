@@ -330,11 +330,28 @@ func RenderConfigHelp() string {
 	header := SecondaryStyle.Render("  /config usage\n")
 	lines := []string{
 		header,
+		"  " + CommandStyle.Render("/config init") + DimStyle.Render("                    — auto-provision API key"),
 		"  " + CommandStyle.Render("/config show") + DimStyle.Render("                    — display current config"),
 		"  " + CommandStyle.Render("/config set api_key <key>") + DimStyle.Render("       — set PaperNick API key"),
 		"  " + CommandStyle.Render("/config set anthropic_key <key>") + DimStyle.Render(" — set Anthropic API key"),
 		"  " + CommandStyle.Render("/config set url <url>") + DimStyle.Render("           — set base URL"),
 		"  " + CommandStyle.Render("/config test") + DimStyle.Render("                    — test API connection"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RenderConfigInit renders a success card after auto-provisioning.
+func RenderConfigInit(apiKey, userName string) string {
+	checkmark := lipgloss.NewStyle().Foreground(ColorPrimary).Render("✓ ")
+	lines := []string{
+		BotMsgStyle.Render("nick: ") + "Account provisioned successfully!",
+		"",
+		"  " + checkmark + BrandStyle.Render("Connected"),
+		"  " + DimStyle.Render("User:    ") + userName,
+		"  " + DimStyle.Render("API Key: ") + maskKeyShort(apiKey),
+		"",
+		"  " + DimStyle.Render("You're ready to go. Try ") +
+			CommandStyle.Render("/status") + DimStyle.Render(" or just ask me anything."),
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1162,6 +1179,7 @@ func RenderHelp() string {
 		{"/man <command>", "Detailed manual pages"},
 		{"/model <id>", "Switch AI model"},
 		{"/theme <name>", "Switch color theme"},
+		{"/config init", "Auto-provision API key"},
 		{"/config", "Manage API key & connection"},
 		{"/clear", "Clear chat history"},
 		{"/quit", "Exit NickAI"},
