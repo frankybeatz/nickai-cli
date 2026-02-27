@@ -41,7 +41,7 @@ var knownCommands = []string{
 	"/buy", "/sell", "/price", "/watch", "/snapshot",
 	"/market", "/pnl", "/history", "/credential", "/workflow",
 	"/logs", "/man", "/config", "/clear", "/quit",
-	"/alert", "/chart", "/theme", "/model",
+	"/alert", "/chart", "/theme", "/model", "/mcp",
 }
 
 var knownSymbols = []string{
@@ -1584,6 +1584,9 @@ func (m *Model) renderResult(r commands.Result) string {
 	case commands.TypeModel:
 		return m.handleModel(r.Args)
 
+	case commands.TypeMCP:
+		return m.handleMCP(r.Args)
+
 	case commands.TypeSnapshot:
 		if !m.client.IsConfigured() {
 			return connectPrompt()
@@ -1740,6 +1743,132 @@ func (m *Model) handleConfig(args []string) string {
 	default:
 		return RenderConfigHelp()
 	}
+}
+
+// handleMCP processes /mcp subcommands.
+func (m *Model) handleMCP(args []string) string {
+	if len(args) == 0 {
+		return RenderMCPHelp()
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "list", "ls":
+		return m.renderMCPList()
+
+	case "search":
+		query := ""
+		if len(args) > 1 {
+			query = strings.Join(args[1:], " ")
+		}
+		results := mcp.SearchRegistry(query)
+		if len(results) == 0 {
+			return BotMsgStyle.Render("nick: ") + "No servers found for " +
+				CommandStyle.Render(query) + "." +
+				DimStyle.Render("\n  Try: /mcp search trading, /mcp search defi, /mcp search blockchain")
+		}
+		return RenderMCPSearchResults(results)
+
+	case "info":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/mcp info <name>")
+		}
+		entry := mcp.GetEntry(args[1])
+		if entry == nil {
+			return ErrorStyle.Render("  Unknown server: ") + args[1] +
+				DimStyle.Render("\n  Use ") + CommandStyle.Render("/mcp search") +
+				DimStyle.Render(" to browse available servers.")
+		}
+		return RenderMCPInfo(entry)
+
+	case "add":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/mcp add <name>")
+		}
+		entry := mcp.GetEntry(args[1])
+		if entry == nil {
+			return ErrorStyle.Render("  Unknown server: ") + args[1] +
+				DimStyle.Render("\n  Use ") + CommandStyle.Render("/mcp search") +
+				DimStyle.Render(" to browse available servers.")
+		}
+		// Check if required env vars are set.
+		var missing []string
+		for _, key := range entry.EnvKeys {
+			if os.Getenv(key) == "" {
+				missing = append(missing, key)
+			}
+		}
+		if len(missing) > 0 {
+			lines := []string{
+				BotMsgStyle.Render("nick: ") + "To add " + BrandStyle.Render(entry.DisplayName) + ", set these env vars first:",
+				"",
+			}
+			for _, k := range missing {
+				lines = append(lines, "  "+CommandStyle.Render("export "+k+"=<your-key>"))
+			}
+			lines = append(lines, "", DimStyle.Render("  Then run ")+CommandStyle.Render("/mcp add "+entry.Name)+DimStyle.Render(" again."))
+			return strings.Join(lines, "\n")
+		}
+		// Write to mcp.json config.
+		err := mcp.AddServerToConfig(entry)
+		if err != nil {
+			return ErrorStyle.Render("  Failed to save MCP config: ") + err.Error()
+		}
+		return BotMsgStyle.Render("nick: ") + "Added " + BrandStyle.Render(entry.DisplayName) + " to " +
+			DimStyle.Render("~/.nickai/mcp.json") + "." +
+			DimStyle.Render("\n  Restart nickai to activate, or it will load on next launch.")
+
+	case "remove", "rm":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/mcp remove <name>")
+		}
+		err := mcp.RemoveServerFromConfig(args[1])
+		if err != nil {
+			return ErrorStyle.Render("  " + err.Error())
+		}
+		return BotMsgStyle.Render("nick: ") + "Removed " + CommandStyle.Render(args[1]) + " from config." +
+			DimStyle.Render("\n  Restart nickai to apply changes.")
+
+	default:
+		return RenderMCPHelp()
+	}
+}
+
+// renderMCPList shows connected MCP servers and their tools.
+func (m *Model) renderMCPList() string {
+	lines := []string{SecondaryStyle.Render("  MCP Servers\n")}
+
+	// Show connected servers.
+	if m.mcpManager != nil && m.mcpManager.ConnectionCount() > 0 {
+		for _, conn := range m.mcpManager.Connections() {
+			lines = append(lines, "  "+StatusIndicator("running")+BrandStyle.Render(conn.Name)+
+				DimStyle.Render(fmt.Sprintf("  (%d tools)", len(conn.Tools))))
+			for _, t := range conn.Tools {
+				lines = append(lines, "    "+CommandStyle.Render(t.Name)+
+					DimStyle.Render("  "+t.Description))
+			}
+		}
+	} else {
+		lines = append(lines, DimStyle.Render("  No MCP servers connected."))
+		lines = append(lines, "")
+		lines = append(lines, DimStyle.Render("  Get started:")+
+			"\n  "+CommandStyle.Render("/mcp search")+DimStyle.Render("        — browse available servers")+
+			"\n  "+CommandStyle.Render("/mcp add <name>")+DimStyle.Render("   — install a server"))
+	}
+
+	// Show built-in tool count.
+	if m.toolRegistry != nil {
+		builtinCount := 0
+		for _, entry := range m.toolRegistry.All() {
+			if entry.Source == "builtin" {
+				builtinCount++
+			}
+		}
+		lines = append(lines, "")
+		lines = append(lines, DimStyle.Render(fmt.Sprintf("  + %d built-in tools (get_prices, get_portfolio, get_orders, place_order)", builtinCount)))
+	}
+
+	return strings.Join(lines, "\n")
 }
 
 // handleCredential processes /credential subcommands.

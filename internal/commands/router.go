@@ -33,6 +33,7 @@ const (
 	TypeChart
 	TypeTheme
 	TypeModel
+	TypeMCP
 	TypeUnknown
 )
 
@@ -109,6 +110,8 @@ func Route(input string) Result {
 		return Result{Type: TypeTheme, Input: trimmed, Args: args, IsCommand: true}
 	case "/model", "/models":
 		return Result{Type: TypeModel, Input: trimmed, Args: args, IsCommand: true}
+	case "/mcp":
+		return Result{Type: TypeMCP, Input: trimmed, Args: args, IsCommand: true}
 	default:
 		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
 	}

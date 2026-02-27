@@ -383,6 +383,32 @@ Theme preference is saved to config and persists across sessions.`,
 		},
 		seeAlso: []string{"config"},
 	},
+	"mcp": {
+		name:     "mcp - manage MCP server connections",
+		synopsis: "/mcp <subcommand> [args]",
+		desc: `Manage Model Context Protocol (MCP) servers. MCP lets NickAI
+connect to external tools — trading APIs, blockchain data,
+DeFi protocols, and more — as plug-and-play extensions.
+
+Subcommands:
+  list              Show connected servers and their tools
+  search [query]    Browse the curated server directory
+  info <name>       Detailed info on a specific server
+  add <name>        Install a server from the registry
+  remove <name>     Disconnect a server
+
+Servers are stored in ~/.nickai/mcp.json and loaded on startup.
+Each server runs as a subprocess communicating over stdio.`,
+		examples: []string{
+			"/mcp list",
+			"/mcp search trading",
+			"/mcp search defi",
+			"/mcp info ccxt",
+			"/mcp add ccxt",
+			"/mcp remove ccxt",
+		},
+		seeAlso: []string{"config", "credential"},
+	},
 	"watch": {
 		name:     "watch - live price monitor",
 		synopsis: "/watch <SYMBOL> [SYMBOL...]",

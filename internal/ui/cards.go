@@ -11,6 +11,7 @@ import (
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/mock"
 	"github.com/nickai/cli/internal/workflow"
 )
@@ -355,6 +356,70 @@ func RenderConfigInit(apiKey, userName string) string {
 		"  " + DimStyle.Render("You're ready to go. Try ") +
 			CommandStyle.Render("/status") + DimStyle.Render(" or just ask me anything."),
 	}
+	return strings.Join(lines, "\n")
+}
+
+// --- /mcp ---
+
+// RenderMCPHelp shows available /mcp subcommands.
+func RenderMCPHelp() string {
+	header := SecondaryStyle.Render("  /mcp usage\n")
+	lines := []string{
+		header,
+		"  " + CommandStyle.Render("/mcp list") + DimStyle.Render("                — show connected servers & tools"),
+		"  " + CommandStyle.Render("/mcp search <query>") + DimStyle.Render("      — browse available servers"),
+		"  " + CommandStyle.Render("/mcp info <name>") + DimStyle.Render("         — details on a server"),
+		"  " + CommandStyle.Render("/mcp add <name>") + DimStyle.Render("          — install a server from registry"),
+		"  " + CommandStyle.Render("/mcp remove <name>") + DimStyle.Render("       — disconnect a server"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RenderMCPSearchResults shows matching servers from the curated registry.
+func RenderMCPSearchResults(results []mcp.RegistryEntry) string {
+	lines := []string{SecondaryStyle.Render("  MCP Server Registry\n")}
+	for _, e := range results {
+		tier := DimStyle.Render("[community]")
+		if e.Tier == mcp.TierVerified {
+			tier = lipgloss.NewStyle().Foreground(ColorPrimary).Render("[verified]")
+		}
+		lines = append(lines, "  "+BrandStyle.Render(padRight(e.Name, 16))+
+			DimStyle.Render(e.Description)+"  "+tier)
+	}
+	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render("  Use ")+
+		CommandStyle.Render("/mcp info <name>")+
+		DimStyle.Render(" for details, or ")+
+		CommandStyle.Render("/mcp add <name>")+
+		DimStyle.Render(" to install."))
+	return strings.Join(lines, "\n")
+}
+
+// RenderMCPInfo shows details for a single registry entry.
+func RenderMCPInfo(e *mcp.RegistryEntry) string {
+	tier := DimStyle.Render("community")
+	if e.Tier == mcp.TierVerified {
+		tier = lipgloss.NewStyle().Foreground(ColorPrimary).Render("verified")
+	}
+	lines := []string{
+		SecondaryStyle.Render("  " + e.DisplayName + "\n"),
+		"  " + DimStyle.Render(e.Description),
+		"",
+		"  " + DimStyle.Render("Name:    ") + e.Name,
+		"  " + DimStyle.Render("Trust:   ") + tier,
+		"  " + DimStyle.Render("Command: ") + CommandStyle.Render(e.Command+" "+strings.Join(e.Args, " ")),
+		"  " + DimStyle.Render("Repo:    ") + e.Repo,
+	}
+	if len(e.EnvKeys) > 0 {
+		lines = append(lines, "  "+DimStyle.Render("Env:     ")+strings.Join(e.EnvKeys, ", "))
+	}
+	caps := make([]string, len(e.Capabilities))
+	for i, c := range e.Capabilities {
+		caps[i] = string(c)
+	}
+	lines = append(lines, "  "+DimStyle.Render("Caps:    ")+strings.Join(caps, ", "))
+	lines = append(lines, "")
+	lines = append(lines, "  "+CommandStyle.Render("/mcp add "+e.Name)+DimStyle.Render("  — install this server"))
 	return strings.Join(lines, "\n")
 }
 
@@ -1175,6 +1240,9 @@ func RenderHelp() string {
 		{"/history", "Trade journal with all orders"},
 		{"/chart BTC", "ASCII sparkline chart"},
 		{"/alert BTC > 100000", "Set a price alert"},
+		{"/mcp list", "Show connected MCP servers"},
+		{"/mcp search", "Browse available MCP servers"},
+		{"/mcp add <name>", "Install an MCP server"},
 		{"/credential list", "Manage exchange API keys"},
 		{"/workflow list", "Manage automation workflows"},
 		{"/logs <workflow>", "Workflow execution logs"},
