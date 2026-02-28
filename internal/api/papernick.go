@@ -278,18 +278,27 @@ func (c *PapernickClient) TestConnection() (*User, error) {
 
 // --- Registration (no auth required) ---
 
-// RegisterResponse holds the result of user registration.
-type RegisterResponse struct {
-	APIKey string `json:"apiKey"`
-	User   User   `json:"user"`
+// CreateAccountUser is the user object returned by POST /users.
+type CreateAccountUser struct {
+	ID          string  `json:"id"`
+	APIKey      string  `json:"apiKey"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	Cash        float64 `json:"cash"`
 }
 
-// Register creates a new anonymous user and returns an API key.
-// This is a package-level function because no existing auth is needed.
-func Register(baseURL, email, name string) (*RegisterResponse, error) {
-	body := map[string]string{
-		"email": email,
-		"name":  name,
+// CreateAccountResponse holds the result of POST /users.
+type CreateAccountResponse struct {
+	User CreateAccountUser `json:"user"`
+}
+
+// CreateAccount creates a new paper trading account (no auth required).
+// Returns the user with an API key and starting cash.
+func CreateAccount(baseURL, name string) (*CreateAccountResponse, error) {
+	body := map[string]interface{}{
+		"name":        name,
+		"description": "Auto-generated for NickAI CLI",
+		"initialCash": 100000,
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -297,7 +306,7 @@ func Register(baseURL, email, name string) (*RegisterResponse, error) {
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("POST", baseURL+"/auth/register", bytes.NewReader(data))
+	req, err := http.NewRequest("POST", baseURL+"/users", bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +314,7 @@ func Register(baseURL, email, name string) (*RegisterResponse, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("registration failed: %w", err)
+		return nil, fmt.Errorf("account creation failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -315,10 +324,10 @@ func Register(baseURL, email, name string) (*RegisterResponse, error) {
 	}
 
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("registration failed (%d): %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("account creation failed (%d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var result RegisterResponse
+	var result CreateAccountResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}

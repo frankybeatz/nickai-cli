@@ -74,28 +74,50 @@ func RenderWelcome(width int, isConfigured bool) string {
 			Foreground(ColorWhite).
 			Render("I'm your NickAI agent builder.")
 
+	punchlines := []string{
+		"No suit required.",
+		"Wall Street hates this one terminal.",
+		"Pants optional, alpha required.",
+		"Hedge fund energy, hoodie dress code.",
+		"Faster than your broker's lunch break.",
+		"Your Bloomberg at home, in a terminal.",
+		"Because alt-tabbing to Binance is so 2024.",
+		"While your broker is still on hold.",
+		"Less Bloomberg, more brrr.",
+		"Suits not included. Returns may vary.",
+	}
+	bodyText := "AI-powered trading terminal. Build agents, execute trades,\nand manage your portfolio — " +
+		punchlines[rand.Intn(len(punchlines))]
 	body := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#AAAAAA")).
-		Render("I can create trading agents, deploy them, check their\nperformance, and manage your portfolio — all from here.")
+		Render(bodyText)
 
 	var ctaLine, helpHint, tip string
 
+	num := func(n string) string {
+		return lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(n)
+	}
+
 	if !isConfigured {
-		// First-time user: guide them to setup.
+		// First-time user: step-by-step guide.
 		ctaLine = lipgloss.NewStyle().
 			Foreground(ColorWhite).
 			Bold(true).
-			Render("Get started in seconds:")
+			Render("Quick start:")
 
-		helpHint = CommandStyle.Render("  /config init") +
-			DimStyle.Render("  — create your account (free, instant)")
+		helpHint = num("1. ") + CommandStyle.Render("/config init") +
+			DimStyle.Render("            — create paper trading account") +
+			"\n" + num("2. ") + CommandStyle.Render("/config set anthropic_key") +
+			DimStyle.Render(" — connect your AI") +
+			"\n" + num("3. ") + CommandStyle.Render("/mcp quick") +
+			DimStyle.Render("              — install free market data servers") +
+			"\n" + num("4. ") + DimStyle.Render("Ask me anything — ") +
+			lipgloss.NewStyle().Foreground(ColorWhite).Render("\"buy 0.5 ETH\"") +
+			DimStyle.Render(", ") +
+			lipgloss.NewStyle().Foreground(ColorWhite).Render("\"show my portfolio\"")
 
 		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
-			DimStyle.Render("Then try ") +
-			CommandStyle.Render("/status") +
-			DimStyle.Render(", ") +
-			CommandStyle.Render("/price BTC") +
-			DimStyle.Render(", or just ask me anything.")
+			DimStyle.Render("$100k fake money to experiment. Zero risk.")
 	} else {
 		// Returning user: normal CTA + random tip.
 		ctaLine = lipgloss.NewStyle().

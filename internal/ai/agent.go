@@ -63,7 +63,22 @@ func modelAPIName(id string) string {
 	}
 }
 
-const systemPrompt = `You are Nick, an AI trading analyst on the NickAI platform. You have tools for live market data, portfolio management, and trade execution. When asked about markets or whether to buy/sell, ALWAYS use get_prices first to check current data. Be concise, data-driven, and actionable. Give specific price levels and reasoning. The user is paper trading on PaperNick with $100K starting capital.`
+const baseSystemPrompt = `You are Nick, an AI trading analyst on the NickAI platform. You have tools for live market data, portfolio management, and trade execution. When asked about markets or whether to buy/sell, ALWAYS use get_prices first to check current data. Be concise, data-driven, and actionable. Give specific price levels and reasoning. The user is paper trading on PaperNick with $100K starting capital.`
+
+// mcpRegistryHint lists MCP servers the user can install for extra capabilities.
+const mcpRegistryHint = `
+
+You can suggest the user install MCP servers for capabilities you don't currently have. Available servers (install via /mcp add <name>):
+- ccxt: Trade on 100+ crypto exchanges (needs API keys)
+- alpaca: Stocks, ETFs, options, crypto on Alpaca (needs API keys)
+- defillama: DeFi protocol data — TVL, yields, volumes (free, no keys)
+- tradingview: Technical analysis, indicators, screeners (free, no keys)
+- onchain: On-chain data — ERC20 tokens, transactions, contracts (free, no keys)
+- web3: Multi-chain — Ethereum, Solana, Bitcoin (free, no keys)
+- solana: 40+ Solana actions — tokens, DeFi, NFTs (needs RPC URL)
+- jupiter: Solana DEX trades via Jupiter (needs private key)
+- lifi: Cross-chain bridge and swap (free, no keys)
+Quick install all free servers: /mcp quick`
 
 // --- Anthropic API types ---
 
@@ -160,17 +175,38 @@ type Agent struct {
 
 	// MiniMax key (separate from Anthropic).
 	minimaxKey string
+
+	// Dynamic system prompt (includes MCP hints).
+	systemPrompt string
 }
 
 // NewAgent creates an agent with the given PaperNick client, Anthropic API key,
 // and tool registry.
 func NewAgent(client *api.PapernickClient, anthropicKey string, registry *tools.Registry) *Agent {
+	// Build system prompt: base + MCP tool sources + registry hints.
+	prompt := baseSystemPrompt
+
+	// Tell the LLM which MCP tools are currently connected.
+	var mcpTools []string
+	for _, entry := range registry.All() {
+		if entry.Source != "builtin" {
+			mcpTools = append(mcpTools, entry.Name+" (from "+entry.Source+")")
+		}
+	}
+	if len(mcpTools) > 0 {
+		prompt += "\n\nYou also have MCP tools connected: " + strings.Join(mcpTools, ", ") + "."
+	}
+
+	// Always include the registry hint so the LLM can suggest installs.
+	prompt += mcpRegistryHint
+
 	return &Agent{
-		client:   client,
-		apiKey:   anthropicKey,
-		modelID:  "claude-sonnet",
-		provider: ProviderAnthropic,
-		registry: registry,
+		client:       client,
+		apiKey:       anthropicKey,
+		modelID:      "claude-sonnet",
+		provider:     ProviderAnthropic,
+		registry:     registry,
+		systemPrompt: prompt,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -288,7 +324,7 @@ func (a *Agent) chatMiniMax(userMessage string) (string, error) {
 	}
 
 	var messages []mmMessage
-	messages = append(messages, mmMessage{Role: "USER", Text: systemPrompt + "\n\n" + userMessage})
+	messages = append(messages, mmMessage{Role: "USER", Text: a.systemPrompt + "\n\n" + userMessage})
 
 	reqBody := mmRequest{
 		Model:            modelAPIName(a.modelID),
@@ -353,7 +389,7 @@ func (a *Agent) callAnthropic() (*apiResponse, error) {
 	reqBody := apiRequest{
 		Model:     modelAPIName(a.modelID),
 		MaxTokens: maxTokens,
-		System:    systemPrompt,
+		System:    a.systemPrompt,
 		Tools:     a.registry.ToAnthropicTools(),
 		Messages:  a.history,
 	}
@@ -516,7 +552,7 @@ func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error)
 	reqBody := streamAPIRequest{
 		Model:     modelAPIName(a.modelID),
 		MaxTokens: maxTokens,
-		System:    systemPrompt,
+		System:    a.systemPrompt,
 		Tools:     a.registry.ToAnthropicTools(),
 		Messages:  a.history,
 		Stream:    true,

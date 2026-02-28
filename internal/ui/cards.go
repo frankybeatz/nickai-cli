@@ -122,7 +122,7 @@ func RenderOrderList(client *api.PapernickClient, width int) string {
 
 // --- /status: mock fallback or live portfolio ---
 
-func RenderStatusMock() string {
+func RenderStatusMock(mcpMgr *mcp.ClientManager) string {
 	header := SecondaryStyle.Render("  Platform Status\n")
 	lines := []string{
 		header,
@@ -133,13 +133,14 @@ func RenderStatusMock() string {
 		"",
 		"  " + DimStyle.Render("Agents running: ") + "2" +
 			"    " + DimStyle.Render("Uptime: ") + "99.7%",
-		"",
-		DimStyle.Render("  (mock data) ") + connectPrompt(),
 	}
+	lines = append(lines, renderMCPStatus(mcpMgr)...)
+	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render("  (mock data) ")+connectPrompt())
 	return strings.Join(lines, "\n")
 }
 
-func RenderStatusLive(client *api.PapernickClient, width int) string {
+func RenderStatusLive(client *api.PapernickClient, mcpMgr *mcp.ClientManager, width int) string {
 	portfolio, err := client.GetPortfolio()
 	if err != nil {
 		return ErrorStyle.Render("  Failed to fetch portfolio: ") + err.Error()
@@ -179,7 +180,29 @@ func RenderStatusLive(client *api.PapernickClient, width int) string {
 		lines = append(lines, "  "+DimStyle.Render("No open positions."))
 	}
 
+	lines = append(lines, renderMCPStatus(mcpMgr)...)
+
 	return strings.Join(lines, "\n")
+}
+
+// renderMCPStatus returns lines showing MCP connection status.
+func renderMCPStatus(mcpMgr *mcp.ClientManager) []string {
+	var lines []string
+	lines = append(lines, "")
+	lines = append(lines, "  "+SecondaryStyle.Render("MCP Servers"))
+
+	if mcpMgr == nil || mcpMgr.ConnectionCount() == 0 {
+		lines = append(lines, "  "+DimStyle.Render("No servers connected.")+
+			"  "+CommandStyle.Render("/mcp search")+DimStyle.Render(" to browse."))
+		return lines
+	}
+
+	for _, conn := range mcpMgr.Connections() {
+		lines = append(lines, "  "+StatusIndicator("running")+
+			BrandStyle.Render(conn.Name)+
+			DimStyle.Render(fmt.Sprintf("  %d tools", len(conn.Tools))))
+	}
+	return lines
 }
 
 func renderPositionCard(pos api.Position, width int) string {
@@ -348,22 +371,27 @@ func RenderConfigHelp() string {
 // RenderConfigInit renders a success card after auto-provisioning.
 func RenderConfigInit(apiKey, userName string) string {
 	checkmark := lipgloss.NewStyle().Foreground(ColorPrimary).Render("✓ ")
+	num := func(n string) string {
+		return lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(n)
+	}
 	lines := []string{
-		BotMsgStyle.Render("nick: ") + "Account provisioned successfully!",
+		BotMsgStyle.Render("nick: ") + "Paper trading account created!",
 		"",
-		"  " + checkmark + BrandStyle.Render("Connected"),
+		"  " + checkmark + BrandStyle.Render("Connected to PaperNick"),
 		"  " + DimStyle.Render("User:    ") + userName,
 		"  " + DimStyle.Render("API Key: ") + maskKeyShort(apiKey),
+		"  " + DimStyle.Render("You're trading with fake money — experiment freely."),
 		"",
-		"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render("What's next?"),
+		"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render("Try these:"),
 		"",
-		"  " + CommandStyle.Render("/status") + DimStyle.Render("              — check your portfolio"),
-		"  " + CommandStyle.Render("/price BTC ETH") + DimStyle.Render("       — live price quotes"),
-		"  " + CommandStyle.Render("/mcp search") + DimStyle.Render("          — browse trading integrations"),
-		"  " + CommandStyle.Render("/config set anthropic_key <key>"),
-		"    " + DimStyle.Render("                     — enable AI chat with your own key"),
+		"  " + num("1. ") + CommandStyle.Render("/status") + DimStyle.Render("              — see your paper portfolio"),
+		"  " + num("2. ") + CommandStyle.Render("/price BTC ETH SOL") + DimStyle.Render("   — check live prices"),
+		"  " + num("3. ") + CommandStyle.Render("/buy BTC 0.01") + DimStyle.Render("        — make your first paper trade"),
+		"  " + num("4. ") + CommandStyle.Render("/snapshot") + DimStyle.Render("            — full portfolio dashboard"),
+		"  " + num("5. ") + CommandStyle.Render("/help") + DimStyle.Render("                — see all commands"),
 		"",
-		"  " + DimStyle.Render("Or just type naturally — ask me anything."),
+		"  " + DimStyle.Render("Want AI chat? Set your Anthropic key:"),
+		"  " + CommandStyle.Render("/config set anthropic_key <your-key>"),
 	}
 	return strings.Join(lines, "\n")
 }
@@ -380,9 +408,10 @@ func RenderMCPHelp() string {
 		"  " + CommandStyle.Render("/mcp info <name>") + DimStyle.Render("         — details on a server"),
 		"  " + CommandStyle.Render("/mcp add <name>") + DimStyle.Render("          — install a server from registry"),
 		"  " + CommandStyle.Render("/mcp remove <name>") + DimStyle.Render("       — disconnect a server"),
+		"  " + CommandStyle.Render("/mcp quick") + DimStyle.Render("               — install all free servers (no keys needed)"),
 		"",
 		DimStyle.Render("  Try: ") + CommandStyle.Render("/mcp search trading") +
-			DimStyle.Render("  or  ") + CommandStyle.Render("/mcp search defi"),
+			DimStyle.Render("  or  ") + CommandStyle.Render("/mcp quick"),
 	}
 	return strings.Join(lines, "\n")
 }

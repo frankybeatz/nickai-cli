@@ -20,9 +20,16 @@ type MCPConnection struct {
 	Tools  []mcp.Tool
 }
 
+// FailedConnection records a server that failed to start.
+type FailedConnection struct {
+	Name  string
+	Error string
+}
+
 // ClientManager manages connections to multiple external MCP servers.
 type ClientManager struct {
 	connections []*MCPConnection
+	failed      []FailedConnection
 }
 
 // NewClientManager creates an empty client manager.
@@ -37,6 +44,7 @@ func (cm *ClientManager) ConnectAll(cfg *MCPConfig) {
 		conn, err := cm.connect(name, serverCfg)
 		if err != nil {
 			log.Printf("MCP: failed to connect to %s: %v", name, err)
+			cm.failed = append(cm.failed, FailedConnection{Name: name, Error: err.Error()})
 			continue
 		}
 		cm.connections = append(cm.connections, conn)
@@ -159,4 +167,9 @@ func (cm *ClientManager) ConnectionCount() int {
 // Connections returns all active connections (for status display).
 func (cm *ClientManager) Connections() []*MCPConnection {
 	return cm.connections
+}
+
+// Failed returns servers that failed to connect on startup.
+func (cm *ClientManager) Failed() []FailedConnection {
+	return cm.failed
 }

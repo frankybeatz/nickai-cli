@@ -167,6 +167,7 @@ type Model struct {
 	// Tab completion state.
 	completionCandidates []string
 	completionIndex      int
+	completionScroll     int // first visible index in suggestion box
 
 	// Command history (up/down arrow).
 	inputHistory []string
@@ -584,6 +585,9 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(m.completionCandidates) > 0 {
 			if m.completionIndex > 0 {
 				m.completionIndex--
+				if m.completionIndex < m.completionScroll {
+					m.completionScroll = m.completionIndex
+				}
 			}
 			return m, nil
 		}
@@ -604,11 +608,11 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Navigate suggestions if visible.
 		if len(m.completionCandidates) > 0 {
 			max := len(m.completionCandidates) - 1
-			if max > 9 {
-				max = 9
-			}
 			if m.completionIndex < max {
 				m.completionIndex++
+				if m.completionIndex >= m.completionScroll+10 {
+					m.completionScroll = m.completionIndex - 9
+				}
 			}
 			return m, nil
 		}
@@ -762,8 +766,10 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(input, "/") && !strings.Contains(input, " ") {
 		m.completionCandidates = filterSuggestions(input)
 		m.completionIndex = 0
+		m.completionScroll = 0
 	} else {
 		m.completionCandidates = nil
+		m.completionScroll = 0
 	}
 
 	return m, cmd
@@ -1437,7 +1443,7 @@ func (m Model) selectSuggestion() (tea.Model, tea.Cmd) {
 // composeSuggestions overlays the suggestion box above the input bar.
 func (m Model) composeSuggestions(base string) string {
 	boxWidth := min(m.width-4, 48)
-	box := renderSuggestionsBox(m.completionCandidates, m.completionIndex, boxWidth)
+	box := renderSuggestionsBox(m.completionCandidates, m.completionIndex, m.completionScroll, boxWidth)
 	boxLines := strings.Split(box, "\n")
 	baseLines := strings.Split(base, "\n")
 
@@ -1505,9 +1511,9 @@ func (m *Model) renderResult(r commands.Result) string {
 
 	case commands.TypeStatus:
 		if m.client.IsConfigured() {
-			return RenderStatusLive(m.client, m.width)
+			return RenderStatusLive(m.client, m.mcpManager, m.width)
 		}
-		return RenderStatusMock()
+		return RenderStatusMock(m.mcpManager)
 
 	case commands.TypeOrders:
 		if !m.client.IsConfigured() {
@@ -1654,21 +1660,20 @@ func (m *Model) handleConfig(args []string) string {
 				DimStyle.Render(" to re-provision.")
 		}
 		name := fmt.Sprintf("nickai-%s", randomID(8))
-		email := name + "@nickai.local"
 		baseURL := m.cfg.BaseURL
 		if baseURL == "" {
 			baseURL = "https://paper.getnick.ai/api/v1"
 		}
-		result, err := api.Register(baseURL, email, name)
+		result, err := api.CreateAccount(baseURL, name)
 		if err != nil {
-			return ErrorStyle.Render("  Auto-provisioning failed: ") + err.Error()
+			return ErrorStyle.Render("  Account creation failed: ") + err.Error()
 		}
-		m.cfg.APIKey = result.APIKey
+		m.cfg.APIKey = result.User.APIKey
 		if err := m.cfg.Save(); err != nil {
 			return ErrorStyle.Render("  Failed to save config: ") + err.Error()
 		}
 		m.client.UpdateConfig(m.cfg)
-		return RenderConfigInit(result.APIKey, result.User.Name)
+		return RenderConfigInit(result.User.APIKey, result.User.Name)
 
 	case "show":
 		return RenderConfigShow(m.cfg)
@@ -1810,7 +1815,13 @@ func (m *Model) handleMCP(args []string) string {
 				"",
 			}
 			for _, k := range missing {
-				lines = append(lines, "  "+CommandStyle.Render("export "+k+"=<your-key>"))
+				hint := "<your-value>"
+				if entry.EnvHints != nil {
+					if h, ok := entry.EnvHints[k]; ok {
+						hint = h
+					}
+				}
+				lines = append(lines, "  "+CommandStyle.Render("export "+k+"=")+DimStyle.Render(hint))
 			}
 			lines = append(lines, "", DimStyle.Render("  Then run ")+CommandStyle.Render("/mcp add "+entry.Name)+DimStyle.Render(" again."))
 			return strings.Join(lines, "\n")
@@ -1834,6 +1845,30 @@ func (m *Model) handleMCP(args []string) string {
 		}
 		return BotMsgStyle.Render("nick: ") + "Removed " + CommandStyle.Render(args[1]) + " from config." +
 			DimStyle.Render("\n  Restart nickai to apply changes.")
+
+	case "quick":
+		// Add all servers that need no API keys.
+		var added []string
+		for _, entry := range mcp.CuratedRegistry {
+			if len(entry.EnvKeys) == 0 {
+				e := entry
+				if err := mcp.AddServerToConfig(&e); err == nil {
+					added = append(added, entry.DisplayName)
+				}
+			}
+		}
+		if len(added) == 0 {
+			return BotMsgStyle.Render("nick: ") + "All free servers already configured."
+		}
+		lines := []string{
+			BotMsgStyle.Render("nick: ") + fmt.Sprintf("Added %d servers (no API keys needed):", len(added)),
+			"",
+		}
+		for _, name := range added {
+			lines = append(lines, "  "+StatusIndicator("running")+BrandStyle.Render(name))
+		}
+		lines = append(lines, "", DimStyle.Render("  Restart nickai to connect them all."))
+		return strings.Join(lines, "\n")
 
 	default:
 		return RenderMCPHelp()
@@ -1860,6 +1895,16 @@ func (m *Model) renderMCPList() string {
 		lines = append(lines, DimStyle.Render("  Get started:")+
 			"\n  "+CommandStyle.Render("/mcp search")+DimStyle.Render("        — browse available servers")+
 			"\n  "+CommandStyle.Render("/mcp add <name>")+DimStyle.Render("   — install a server"))
+	}
+
+	// Show failed connections.
+	if m.mcpManager != nil && len(m.mcpManager.Failed()) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "  "+ErrorStyle.Render("Failed to connect:"))
+		for _, f := range m.mcpManager.Failed() {
+			lines = append(lines, "  "+StatusIndicator("stopped")+
+				WarningStyle.Render(f.Name)+DimStyle.Render("  "+f.Error))
+		}
 	}
 
 	// Show built-in tool count.

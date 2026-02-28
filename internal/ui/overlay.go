@@ -404,6 +404,7 @@ var paletteCommands = []string{
 	"/mcp add|Install an MCP server",
 	"/mcp info|Details on an MCP server",
 	"/mcp remove|Disconnect an MCP server",
+	"/mcp quick|Install all free MCP servers",
 	"/config|Manage settings",
 	"/config init|Create account & API key",
 	"/man|Manual pages",
@@ -425,14 +426,15 @@ func filterSuggestions(prefix string) []string {
 }
 
 // renderSuggestionsBox renders a compact suggestion menu for the / command picker.
-func renderSuggestionsBox(candidates []string, cursor, boxWidth int) string {
-	maxVisible := len(candidates)
-	if maxVisible > 10 {
-		maxVisible = 10
+func renderSuggestionsBox(candidates []string, cursor, scrollOffset, boxWidth int) string {
+	maxVisible := 10
+	endIdx := scrollOffset + maxVisible
+	if endIdx > len(candidates) {
+		endIdx = len(candidates)
 	}
 
 	var rows []string
-	for i := 0; i < maxVisible; i++ {
+	for i := scrollOffset; i < endIdx; i++ {
 		entry := candidates[i]
 		prefix := "  "
 		if i == cursor {
@@ -455,7 +457,15 @@ func renderSuggestionsBox(candidates []string, cursor, boxWidth int) string {
 	}
 
 	if len(candidates) > maxVisible {
-		rows = append(rows, DimStyle.Render(fmt.Sprintf("  ... %d more", len(candidates)-maxVisible)))
+		remaining := len(candidates) - endIdx
+		above := scrollOffset
+		if above > 0 && remaining > 0 {
+			rows = append(rows, DimStyle.Render(fmt.Sprintf("  ↑%d  ↓%d more", above, remaining)))
+		} else if remaining > 0 {
+			rows = append(rows, DimStyle.Render(fmt.Sprintf("  ↓ %d more", remaining)))
+		} else if above > 0 {
+			rows = append(rows, DimStyle.Render(fmt.Sprintf("  ↑ %d above", above)))
+		}
 	}
 
 	content := strings.Join(rows, "\n")

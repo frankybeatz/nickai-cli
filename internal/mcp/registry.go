@@ -22,16 +22,17 @@ const (
 
 // RegistryEntry describes a known MCP server in the curated directory.
 type RegistryEntry struct {
-	Name         string       // short name used with /mcp add
-	DisplayName  string       // human-readable name
-	Description  string       // one-liner
-	Repo         string       // GitHub URL
-	Command      string       // command to run
-	Args         []string     // default args
-	EnvKeys      []string     // required env vars (user must supply)
-	Tier         TrustTier    // trust level
-	Capabilities []Capability // what it can do
-	Tags         []string     // searchable tags
+	Name         string            // short name used with /mcp add
+	DisplayName  string            // human-readable name
+	Description  string            // one-liner
+	Repo         string            // GitHub URL
+	Command      string            // command to run
+	Args         []string          // default args
+	EnvKeys      []string          // required env vars (user must supply)
+	EnvHints     map[string]string // human-readable hint per env var
+	Tier         TrustTier         // trust level
+	Capabilities []Capability      // what it can do
+	Tags         []string          // searchable tags
 }
 
 // CuratedRegistry is the built-in directory of known MCP servers.
@@ -46,6 +47,11 @@ var CuratedRegistry = []RegistryEntry{
 		Command:     "npx",
 		Args:        []string{"-y", "mcp-server-ccxt"},
 		EnvKeys:     []string{"EXCHANGE_ID", "EXCHANGE_API_KEY", "EXCHANGE_SECRET"},
+		EnvHints: map[string]string{
+			"EXCHANGE_ID":      "exchange name (binance, coinbase, kraken...)",
+			"EXCHANGE_API_KEY": "your exchange API key",
+			"EXCHANGE_SECRET":  "your exchange API secret",
+		},
 		Tier:        TierVerified,
 		Capabilities: []Capability{CapReadData, CapTrade},
 		Tags:        []string{"trading", "exchange", "crypto", "binance", "coinbase", "spot", "futures"},
