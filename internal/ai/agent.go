@@ -19,7 +19,7 @@ const (
 	anthropicURL     = "https://api.anthropic.com/v1/messages"
 	anthropicVersion = "2023-06-01"
 	maxTokens        = 4096
-	maxToolRounds    = 10
+	maxToolRounds    = 15
 	maxRetries       = 3
 	retryDelay       = 1 * time.Second
 
@@ -179,6 +179,12 @@ type Agent struct {
 
 	// Dynamic system prompt (includes MCP hints).
 	systemPrompt string
+
+	// Risk prompt suffix injected when risk limits are set.
+	riskPromptSuffix string
+
+	// Automation prompt suffix injected when automations exist.
+	autoPromptSuffix string
 }
 
 // NewAgent creates an agent with the given PaperNick client, Anthropic API key,
@@ -251,6 +257,29 @@ func (a *Agent) ModelID() string {
 // UpdateClient refreshes the PaperNick client reference (after config change).
 func (a *Agent) UpdateClient(client *api.PapernickClient) {
 	a.client = client
+}
+
+// SetRiskInfo sets a risk limits suffix that gets appended to the system prompt.
+// Call with empty string to clear.
+func (a *Agent) SetRiskInfo(info string) {
+	a.riskPromptSuffix = info
+}
+
+// SetAutoInfo sets an automation hint suffix for the system prompt.
+func (a *Agent) SetAutoInfo(info string) {
+	a.autoPromptSuffix = info
+}
+
+// effectivePrompt returns the system prompt with any dynamic suffixes.
+func (a *Agent) effectivePrompt() string {
+	p := a.systemPrompt
+	if a.riskPromptSuffix != "" {
+		p += "\n\n" + a.riskPromptSuffix
+	}
+	if a.autoPromptSuffix != "" {
+		p += "\n\n" + a.autoPromptSuffix
+	}
+	return p
 }
 
 // Chat sends a user message and runs the tool-use loop until the model
@@ -326,7 +355,7 @@ func (a *Agent) chatMiniMax(userMessage string) (string, error) {
 	}
 
 	var messages []mmMessage
-	messages = append(messages, mmMessage{Role: "USER", Text: a.systemPrompt + "\n\n" + userMessage})
+	messages = append(messages, mmMessage{Role: "USER", Text: a.effectivePrompt() + "\n\n" + userMessage})
 
 	reqBody := mmRequest{
 		Model:            modelAPIName(a.modelID),
@@ -391,7 +420,7 @@ func (a *Agent) callAnthropic() (*apiResponse, error) {
 	reqBody := apiRequest{
 		Model:     modelAPIName(a.modelID),
 		MaxTokens: maxTokens,
-		System:    a.systemPrompt,
+		System:    a.effectivePrompt(),
 		Tools:     a.registry.ToAnthropicTools(),
 		Messages:  a.history,
 	}
@@ -554,7 +583,7 @@ func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error)
 	reqBody := streamAPIRequest{
 		Model:     modelAPIName(a.modelID),
 		MaxTokens: maxTokens,
-		System:    a.systemPrompt,
+		System:    a.effectivePrompt(),
 		Tools:     a.registry.ToAnthropicTools(),
 		Messages:  a.history,
 		Stream:    true,

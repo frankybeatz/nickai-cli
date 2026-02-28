@@ -8,11 +8,18 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/nickai/cli/internal/analytics"
 	"github.com/nickai/cli/internal/api"
+	"github.com/nickai/cli/internal/automation"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/indicators"
+	"github.com/nickai/cli/internal/journal"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/mock"
+	"github.com/nickai/cli/internal/notify"
+	"github.com/nickai/cli/internal/risk"
+	"github.com/nickai/cli/internal/strategy"
 	"github.com/nickai/cli/internal/trigger"
 	"github.com/nickai/cli/internal/workflow"
 )
@@ -1297,6 +1304,12 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/templates", "Browse marketplace templates"))
 	lines = append(lines, cmdLine("/workflow", "Manage automation workflows"))
 	lines = append(lines, cmdLine("/trigger add BTC < 60000 sell 0.5", "Conditional trade"))
+	lines = append(lines, cmdLine("/risk set max-order 5000", "Risk guardrails"))
+	lines = append(lines, cmdLine("/strategy twap ETH buy $2000 4h", "TWAP strategy"))
+	lines = append(lines, cmdLine("/auto list", "Automation rules"))
+	lines = append(lines, cmdLine("/notify set desktop on", "Desktop notifications"))
+	lines = append(lines, cmdLine("/analytics", "Portfolio analytics"))
+	lines = append(lines, cmdLine("/analyze BTC", "Market analysis"))
 	lines = append(lines, cmdLine("/logs <workflow>", "Workflow execution logs"))
 
 	lines = append(lines, sectionHeader("Setup & Integrations"))
@@ -1394,4 +1407,472 @@ func RenderTriggerConfirm(t trigger.Trigger, currentPrice float64) string {
 		"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(
 			strings.ToUpper(t.Action.Side)+" "+fmt.Sprintf("%g", t.Action.Quantity)+" "+t.Symbol+" ("+t.Action.Type+")") + "\n" +
 		DimStyle.Render("  Press y to execute, n to skip")
+}
+
+// --- Risk rendering ---
+
+// RenderRiskLimits displays current risk limits.
+func RenderRiskLimits(limits *risk.RiskLimits) string {
+	if limits == nil || limits.IsEmpty() {
+		return DimStyle.Render("  No risk limits set.") + "\n" +
+			DimStyle.Render("  Set with ") + CommandStyle.Render("/risk set max-order 5000")
+	}
+
+	var lines []string
+	lines = append(lines, SecondaryStyle.Render("  Risk Guardrails\n"))
+
+	if limits.MaxOrderValue > 0 {
+		lines = append(lines, "  "+StatusIndicator("running")+
+			DimStyle.Render("Max Order Value:    ")+
+			BrandStyle.Render(fmt.Sprintf("$%.0f", limits.MaxOrderValue)))
+	}
+	if limits.MaxPositionPct > 0 {
+		lines = append(lines, "  "+StatusIndicator("running")+
+			DimStyle.Render("Max Position:       ")+
+			BrandStyle.Render(fmt.Sprintf("%.0f%%", limits.MaxPositionPct)))
+	}
+	if limits.DailyLossPct > 0 {
+		lines = append(lines, "  "+StatusIndicator("running")+
+			DimStyle.Render("Daily Loss Limit:   ")+
+			BrandStyle.Render(fmt.Sprintf("%.0f%%", limits.DailyLossPct)))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RenderRiskHelp shows /risk usage.
+func RenderRiskHelp() string {
+	header := SecondaryStyle.Render("  /risk — portfolio risk guardrails\n")
+	lines := []string{
+		header,
+		"  " + CommandStyle.Render("/risk show") + DimStyle.Render("                     — view current limits"),
+		"  " + CommandStyle.Render("/risk set max-order <$>") + DimStyle.Render("        — max single order value"),
+		"  " + CommandStyle.Render("/risk set max-position <%>") + DimStyle.Render("     — max position as % of portfolio"),
+		"  " + CommandStyle.Render("/risk set daily-loss <%>") + DimStyle.Render("       — daily loss limit %"),
+		"  " + CommandStyle.Render("/risk clear") + DimStyle.Render("                    — remove all limits"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// --- Strategy rendering ---
+
+// RenderStrategyList shows all TWAP strategies.
+func RenderStrategyList(strategies []strategy.TWAPStrategy) string {
+	if len(strategies) == 0 {
+		return DimStyle.Render("  No strategies.") + "\n" +
+			DimStyle.Render("  Create one with ") + CommandStyle.Render("/strategy twap ETH buy $2000 4h")
+	}
+
+	var lines []string
+	lines = append(lines, SecondaryStyle.Render("  TWAP Strategies\n"))
+
+	for _, s := range strategies {
+		statusStr := "running"
+		if s.Status != "active" {
+			statusStr = "stopped"
+		}
+		status := StatusIndicator(statusStr)
+
+		progress := fmt.Sprintf("%d/%d", s.Executed, s.SliceCount)
+		side := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(strings.ToUpper(s.Side))
+		if s.Side == "sell" {
+			side = lipgloss.NewStyle().Foreground(ColorError).Bold(true).Render("SELL")
+		}
+
+		lines = append(lines, "  "+status+
+			side+" "+BrandStyle.Render(s.Symbol)+
+			DimStyle.Render(fmt.Sprintf("  $%.0f over %s  [%s]  ", s.TotalValue, s.Duration, progress))+
+			renderStrategyStatus(s.Status)+
+			DimStyle.Render("  ["+s.ID[:6]+"]"))
+
+		if s.Status == "active" {
+			nextStr := s.NextSliceAt.Format("3:04 PM")
+			lines = append(lines, "    "+DimStyle.Render("Next slice: ")+nextStr+
+				DimStyle.Render(fmt.Sprintf("  ($%.2f/slice)", s.SliceValue)))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderStrategyStatus(s string) string {
+	switch s {
+	case "active":
+		return BrandStyle.Render(s)
+	case "completed":
+		return lipgloss.NewStyle().Foreground(ColorPrimary).Render(s)
+	case "cancelled":
+		return DimStyle.Render(s)
+	default:
+		return DimStyle.Render(s)
+	}
+}
+
+// RenderStrategySliceConfirm renders a confirmation card for a TWAP slice.
+func RenderStrategySliceConfirm(s strategy.TWAPStrategy, price float64) string {
+	qty := s.SliceValue / price
+	side := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(strings.ToUpper(s.Side))
+	if s.Side == "sell" {
+		side = lipgloss.NewStyle().Foreground(ColorError).Bold(true).Render("SELL")
+	}
+
+	return WarningStyle.Render("  TWAP SLICE ") +
+		DimStyle.Render(fmt.Sprintf(" (%d/%d)", s.Executed+1, s.SliceCount)) + "\n" +
+		"  " + side + " " + BrandStyle.Render(s.Symbol) +
+		DimStyle.Render(fmt.Sprintf("  %.4f @ %s ≈ $%.2f", qty, formatPrice(price), s.SliceValue)) + "\n" +
+		DimStyle.Render("  Press y to execute, n to skip")
+}
+
+// RenderStrategyHelp shows /strategy usage.
+func RenderStrategyHelp() string {
+	header := SecondaryStyle.Render("  /strategy — TWAP execution strategies\n")
+	lines := []string{
+		header,
+		"  " + CommandStyle.Render("/strategy twap <SYM> <buy|sell> $<VALUE> <DURATION>") + DimStyle.Render(" — create TWAP"),
+		"  " + CommandStyle.Render("/strategy list") + DimStyle.Render("                                      — show strategies"),
+		"  " + CommandStyle.Render("/strategy cancel <id>") + DimStyle.Render("                               — cancel strategy"),
+		"",
+		DimStyle.Render("  Duration examples: 4h, 1h, 30m, 2h30m"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// --- Notification rendering ---
+
+// RenderNotifyConfig displays the current notification configuration.
+func RenderNotifyConfig(cfg *notify.Config) string {
+	if cfg == nil || cfg.IsEmpty() {
+		return DimStyle.Render("  No notification channels configured.") + "\n" +
+			DimStyle.Render("  Set with ") + CommandStyle.Render("/notify set desktop on")
+	}
+
+	var lines []string
+	lines = append(lines, SecondaryStyle.Render("  Notification Settings\n"))
+
+	indicator := func(enabled bool) string {
+		if enabled {
+			return StatusIndicator("running")
+		}
+		return StatusIndicator("stopped")
+	}
+
+	lines = append(lines, "  "+indicator(cfg.Desktop)+
+		DimStyle.Render("Desktop:  ")+boolStr(cfg.Desktop))
+	lines = append(lines, "  "+indicator(cfg.Sound)+
+		DimStyle.Render("Sound:    ")+boolStr(cfg.Sound))
+
+	webhookStr := DimStyle.Render("(none)")
+	if cfg.WebhookURL != "" {
+		webhookStr = BrandStyle.Render(cfg.WebhookURL)
+	}
+	lines = append(lines, "  "+indicator(cfg.WebhookURL != "")+
+		DimStyle.Render("Webhook:  ")+webhookStr)
+
+	return strings.Join(lines, "\n")
+}
+
+func boolStr(v bool) string {
+	if v {
+		return BrandStyle.Render("on")
+	}
+	return DimStyle.Render("off")
+}
+
+// RenderNotifyHelp shows /notify usage.
+func RenderNotifyHelp() string {
+	header := SecondaryStyle.Render("  /notify — desktop & webhook notifications\n")
+	lines := []string{
+		header,
+		"  " + CommandStyle.Render("/notify show") + DimStyle.Render("                      — view settings"),
+		"  " + CommandStyle.Render("/notify set desktop on|off") + DimStyle.Render("        — toggle desktop alerts"),
+		"  " + CommandStyle.Render("/notify set sound on|off") + DimStyle.Render("          — toggle sound"),
+		"  " + CommandStyle.Render("/notify set webhook <url>") + DimStyle.Render("         — set webhook URL"),
+		"  " + CommandStyle.Render("/notify clear") + DimStyle.Render("                     — reset all settings"),
+		"  " + CommandStyle.Render("/notify test") + DimStyle.Render("                      — send a test notification"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// --- Analytics rendering ---
+
+// RenderAnalytics displays portfolio analytics with metrics and allocation chart.
+func RenderAnalytics(client *api.PapernickClient, width int) string {
+	cardWidth := min(width-4, 64)
+
+	// Load journal entries.
+	entries, _ := journal.All()
+
+	// Load portfolio.
+	portfolio, err := client.GetPortfolio()
+	if err != nil {
+		return ErrorStyle.Render("  Failed to load portfolio: ") + err.Error()
+	}
+
+	// Build price map.
+	symbolSet := make(map[string]bool)
+	for _, e := range entries {
+		base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(e.Symbol, "USDT"), "USDC"), "USD")
+		symbolSet[base] = true
+	}
+	for _, a := range portfolio.Assets {
+		base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(a.Symbol, "USDT"), "USDC"), "USD")
+		symbolSet[base] = true
+	}
+	symbols := make([]string, 0, len(symbolSet))
+	for s := range symbolSet {
+		symbols = append(symbols, s)
+	}
+	priceMap := make(map[string]float64)
+	if len(symbols) > 0 {
+		if prices, err := client.GetPrices(symbols); err == nil {
+			for _, p := range prices {
+				priceMap[p.Symbol] = p.Price
+				base := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(p.Symbol, "USDT"), "USDC"), "USD")
+				priceMap[base] = p.Price
+			}
+		}
+	}
+
+	metrics := analytics.Calculate(entries, priceMap)
+	allocs := analytics.CalcAllocation(portfolio)
+
+	// Build metrics display.
+	var lines []string
+	lines = append(lines, "")
+
+	// Key metrics row.
+	sharpeColor := ColorPrimary
+	if metrics.SharpeRatio < 0 {
+		sharpeColor = ColorError
+	}
+	lines = append(lines,
+		DimStyle.Render("Sharpe Ratio:   ")+lipgloss.NewStyle().Foreground(sharpeColor).Bold(true).Render(fmt.Sprintf("%.2f", metrics.SharpeRatio))+
+			DimStyle.Render("        Win Rate:      ")+lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(fmt.Sprintf("%.1f%%", metrics.WinRate)))
+	lines = append(lines,
+		DimStyle.Render("Max Drawdown:   ")+ErrorStyle.Render(fmt.Sprintf("%.1f%%", metrics.MaxDrawdownPct))+
+			DimStyle.Render("        Profit Factor: ")+BrandStyle.Render(fmt.Sprintf("%.2f", metrics.ProfitFactor)))
+	lines = append(lines,
+		DimStyle.Render("Total Trades:   ")+fmt.Sprintf("%d", metrics.TotalTrades)+
+			DimStyle.Render("            W/L:           ")+fmt.Sprintf("%d/%d", metrics.WinCount, metrics.LossCount))
+
+	pnlStyle := lipgloss.NewStyle().Foreground(ColorPrimary)
+	if metrics.TotalPnL < 0 {
+		pnlStyle = lipgloss.NewStyle().Foreground(ColorError)
+	}
+	lines = append(lines,
+		DimStyle.Render("Total P&L:      ")+pnlStyle.Bold(true).Render(fmt.Sprintf("$%.2f", metrics.TotalPnL)))
+
+	if metrics.WinCount > 0 || metrics.LossCount > 0 {
+		lines = append(lines,
+			DimStyle.Render("Avg Win:        ")+BrandStyle.Render(fmt.Sprintf("$%.2f", metrics.AvgWin))+
+				DimStyle.Render("       Avg Loss:       ")+ErrorStyle.Render(fmt.Sprintf("$%.2f", metrics.AvgLoss)))
+		lines = append(lines,
+			DimStyle.Render("Best Trade:     ")+BrandStyle.Render(fmt.Sprintf("$%.2f", metrics.BestTrade))+
+				DimStyle.Render("     Worst Trade:    ")+ErrorStyle.Render(fmt.Sprintf("$%.2f", metrics.WorstTrade)))
+	}
+
+	// Allocation bar chart.
+	if len(allocs) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("Allocation"))
+		barWidth := cardWidth - 24
+		if barWidth < 10 {
+			barWidth = 10
+		}
+		for _, a := range allocs {
+			filled := int(a.Percent / 100 * float64(barWidth))
+			if filled < 0 {
+				filled = 0
+			}
+			if filled > barWidth {
+				filled = barWidth
+			}
+			bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+			lines = append(lines,
+				"  "+padRight(a.Symbol, 6)+
+					lipgloss.NewStyle().Foreground(ColorPrimary).Render(bar)+
+					DimStyle.Render(fmt.Sprintf(" %5.1f%% $%.0f", a.Percent, a.Value)))
+		}
+	}
+
+	lines = append(lines, "")
+
+	content := strings.Join(lines, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Padding(0, 2).
+		Width(cardWidth).
+		Render(content)
+
+	return SecondaryStyle.Render("  Portfolio Analytics") + "\n" + box
+}
+
+// --- Market Analysis rendering ---
+
+// RenderAnalysis displays technical analysis for a symbol.
+func RenderAnalysis(client *api.PapernickClient, symbol string, width int) string {
+	cardWidth := min(width-4, 64)
+	symbol = strings.ToUpper(symbol)
+
+	// Fetch current price.
+	prices, err := client.GetPrices([]string{symbol})
+	if err != nil || len(prices) == 0 {
+		return ErrorStyle.Render("  Failed to fetch price for ") + symbol
+	}
+	currentPrice := prices[0].Price
+
+	// Generate synthetic price history.
+	history := generateSparklineData(currentPrice, 50)
+
+	// Fear & Greed.
+	fg, fgLabel, _ := indicators.FetchFearGreed()
+
+	a := indicators.Analyze(symbol, currentPrice, history, fg, fgLabel)
+
+	// Build display.
+	var lines []string
+	lines = append(lines, "")
+	lines = append(lines,
+		BrandStyle.Render(symbol)+"  "+
+			lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(formatPrice(currentPrice)))
+	lines = append(lines, "")
+
+	// Indicator badges.
+	badge := func(label, value, signal string) string {
+		signalColor := ColorDim
+		switch signal {
+		case "overbought", "bearish", "above":
+			signalColor = ColorError
+		case "oversold", "bullish", "below":
+			signalColor = ColorPrimary
+		}
+		return DimStyle.Render(padRight(label, 14)) +
+			lipgloss.NewStyle().Foreground(ColorWhite).Render(value) +
+			"  " + lipgloss.NewStyle().Foreground(signalColor).Bold(true).Render(signal)
+	}
+
+	lines = append(lines, badge("RSI (14)", fmt.Sprintf("%.1f", a.RSI), a.RSISignal))
+	lines = append(lines, badge("MACD", fmt.Sprintf("%.2f", a.MACD), a.MACDTrend))
+	lines = append(lines, badge("Bollinger", fmt.Sprintf("%.0f / %.0f", a.BollingerLower, a.BollingerUpper), a.BollingerPos))
+	lines = append(lines, badge("SMA 20", formatPrice(a.SMA20), ""))
+	if a.SMA50 > 0 {
+		lines = append(lines, badge("SMA 50", formatPrice(a.SMA50), ""))
+	}
+	lines = append(lines, badge("Trend", a.Trend, a.Trend))
+
+	// Fear & Greed.
+	if a.FearGreedLabel != "" {
+		fgColor := ColorDim
+		switch {
+		case a.FearGreed <= 25:
+			fgColor = ColorError
+		case a.FearGreed >= 75:
+			fgColor = ColorPrimary
+		case a.FearGreed >= 50:
+			fgColor = ColorWarning
+		}
+		lines = append(lines, "")
+		lines = append(lines, DimStyle.Render("Fear & Greed:   ")+
+			lipgloss.NewStyle().Foreground(fgColor).Bold(true).Render(
+				fmt.Sprintf("%d/100 (%s)", a.FearGreed, a.FearGreedLabel)))
+	}
+
+	// Sparkline.
+	lines = append(lines, "")
+	sparkWidth := cardWidth - 6
+	if sparkWidth > 40 {
+		sparkWidth = 40
+	}
+	lines = append(lines, "  "+renderSparkline(history, sparkWidth))
+
+	// Summary.
+	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render(a.Summary))
+	lines = append(lines, "")
+
+	content := strings.Join(lines, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Padding(0, 2).
+		Width(cardWidth).
+		Render(content)
+
+	return SecondaryStyle.Render("  Market Analysis") + "\n" + box
+}
+
+// --- Automation rendering ---
+
+// RenderAutoList shows all automation rules.
+func RenderAutoList(rules []automation.AutoRule) string {
+	if len(rules) == 0 {
+		return DimStyle.Render("  No automation rules.") + "\n" +
+			DimStyle.Render("  Ask the AI to create one, e.g. ") +
+			CommandStyle.Render("\"buy $100 of BTC every day\"")
+	}
+
+	var lines []string
+	lines = append(lines, SecondaryStyle.Render("  Automation Rules\n"))
+
+	for _, r := range rules {
+		statusStr := "running"
+		if r.Status != "active" {
+			statusStr = "stopped"
+		}
+		status := StatusIndicator(statusStr)
+
+		typeTag := DimStyle.Render("[" + string(r.Type) + "]")
+		desc := lipgloss.NewStyle().Foreground(ColorWhite).Render(r.Description)
+		idStr := DimStyle.Render("  [" + r.ID[:6] + "]")
+
+		lines = append(lines, "  "+status+desc+idStr)
+
+		// Details line.
+		details := "    " + typeTag
+		if r.Schedule != "" {
+			details += DimStyle.Render("  every ") + r.Schedule
+		}
+		action := fmt.Sprintf("  %s %s $%.0f", strings.ToUpper(r.Action), r.ActionSymbol, r.ActionValue)
+		details += lipgloss.NewStyle().Foreground(ColorSecondary).Render(action)
+		if r.FireCount > 0 {
+			details += DimStyle.Render(fmt.Sprintf("  (%d fires)", r.FireCount))
+		}
+		lines = append(lines, details)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RenderAutoConfirm renders a confirmation card for an automation fire.
+func RenderAutoConfirm(rule automation.AutoRule, price float64) string {
+	side := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(strings.ToUpper(rule.Action))
+	if rule.Action == "sell" || rule.Action == "sell_all" {
+		side = lipgloss.NewStyle().Foreground(ColorError).Bold(true).Render(strings.ToUpper(rule.Action))
+	}
+
+	qty := 0.0
+	if price > 0 {
+		qty = rule.ActionValue / price
+	}
+
+	return WarningStyle.Render("  AUTOMATION FIRED ") + "\n" +
+		"  " + DimStyle.Render(rule.Description) + "\n" +
+		"  " + side + " " + BrandStyle.Render(rule.ActionSymbol) +
+		DimStyle.Render(fmt.Sprintf("  %.4f @ %s ≈ $%.0f", qty, formatPrice(price), rule.ActionValue)) + "\n" +
+		DimStyle.Render("  Press y to execute, n to skip")
+}
+
+// RenderAutoHelp shows /auto usage.
+func RenderAutoHelp() string {
+	header := SecondaryStyle.Render("  /auto — natural language automation\n")
+	lines := []string{
+		header,
+		"  " + CommandStyle.Render("/auto list") + DimStyle.Render("                    — view all rules"),
+		"  " + CommandStyle.Render("/auto pause <id>") + DimStyle.Render("              — pause a rule"),
+		"  " + CommandStyle.Render("/auto resume <id>") + DimStyle.Render("             — resume a rule"),
+		"  " + CommandStyle.Render("/auto remove <id>") + DimStyle.Render("             — delete a rule"),
+		"",
+		DimStyle.Render("  Create rules by asking the AI:"),
+		"  " + CommandStyle.Render("\"buy $100 of BTC every day\""),
+		"  " + CommandStyle.Render("\"sell ETH if it goes above 5000\""),
+	}
+	return strings.Join(lines, "\n")
 }

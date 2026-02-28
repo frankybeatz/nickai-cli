@@ -35,6 +35,12 @@ const (
 	TypeModel
 	TypeMCP
 	TypeTrigger
+	TypeRisk
+	TypeStrategy
+	TypeNotify
+	TypeAnalytics
+	TypeAnalyze
+	TypeAuto
 	TypeUnknown
 )
 
@@ -115,6 +121,18 @@ func Route(input string) Result {
 		return Result{Type: TypeMCP, Input: trimmed, Args: args, IsCommand: true}
 	case "/trigger", "/trig":
 		return Result{Type: TypeTrigger, Input: trimmed, Args: args, IsCommand: true}
+	case "/risk":
+		return Result{Type: TypeRisk, Input: trimmed, Args: args, IsCommand: true}
+	case "/strategy", "/strat":
+		return Result{Type: TypeStrategy, Input: trimmed, Args: args, IsCommand: true}
+	case "/notify":
+		return Result{Type: TypeNotify, Input: trimmed, Args: args, IsCommand: true}
+	case "/analytics":
+		return Result{Type: TypeAnalytics, Input: trimmed, Args: args, IsCommand: true}
+	case "/analyze":
+		return Result{Type: TypeAnalyze, Input: trimmed, Args: args, IsCommand: true}
+	case "/auto", "/automation":
+		return Result{Type: TypeAuto, Input: trimmed, Args: args, IsCommand: true}
 	default:
 		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
 	}

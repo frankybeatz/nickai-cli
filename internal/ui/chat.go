@@ -17,10 +17,15 @@ import (
 	"github.com/nickai/cli/internal/ai"
 	"github.com/nickai/cli/internal/alert"
 	"github.com/nickai/cli/internal/api"
+	"github.com/nickai/cli/internal/automation"
 	"github.com/nickai/cli/internal/commands"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/journal"
 	"github.com/nickai/cli/internal/mcp"
+	"github.com/nickai/cli/internal/notify"
+	"github.com/nickai/cli/internal/risk"
+	"github.com/nickai/cli/internal/strategy"
 	"github.com/nickai/cli/internal/tools"
 	"github.com/nickai/cli/internal/trigger"
 	"github.com/nickai/cli/internal/workflow"
@@ -44,6 +49,7 @@ var knownCommands = []string{
 	"/market", "/pnl", "/history", "/credential", "/workflow",
 	"/logs", "/man", "/config", "/clear", "/quit",
 	"/alert", "/chart", "/theme", "/model", "/mcp", "/trigger",
+	"/risk", "/strategy", "/notify", "/analytics", "/analyze", "/auto",
 }
 
 var knownSymbols = []string{
@@ -53,7 +59,7 @@ var knownSymbols = []string{
 var symbolCommands = map[string]bool{
 	"/price": true, "/buy": true, "/sell": true,
 	"/watch": true, "/chart": true, "/alert": true,
-	"/trigger": true,
+	"/trigger": true, "/analyze": true,
 }
 
 // editorFinishedMsg is sent when an external editor process completes.
@@ -107,6 +113,29 @@ type aiTradeConfirmMsg struct {
 type triggerFiredMsg struct {
 	trigger trigger.Trigger
 	price   float64
+}
+
+// journalEntryMsg carries a journal entry from the tool executor.
+type journalEntryMsg struct {
+	entry journal.JournalEntry
+}
+
+// strategyTickMsg triggers a periodic strategy check.
+type strategyTickMsg struct{}
+
+// strategySliceMsg is sent when a TWAP strategy slice is due.
+type strategySliceMsg struct {
+	strategy strategy.TWAPStrategy
+	price    float64
+}
+
+// autoTickMsg triggers periodic automation check.
+type autoTickMsg struct{}
+
+// autoRuleFiredMsg is sent when an automation rule fires.
+type autoRuleFiredMsg struct {
+	rule  automation.AutoRule
+	price float64
 }
 
 // tickerFetchMsg signals time to fetch new ticker data.
@@ -194,8 +223,27 @@ type Model struct {
 	tickerTicking bool
 
 	// Trade confirmation state.
-	pendingTrade   *api.PlaceOrderRequest // manual /buy /sell
-	pendingAITrade *tools.ConfirmRequest  // AI-initiated place_order
+	pendingTrade         *api.PlaceOrderRequest   // manual /buy /sell
+	pendingAITrade       *tools.ConfirmRequest     // AI-initiated place_order
+	pendingStrategySlice *strategy.TWAPStrategy    // TWAP slice awaiting confirmation
+	pendingSlicePrice    float64                   // price for pending strategy slice
+	pendingRationale     string                    // last AI message for journal capture
+
+	// Risk guardrails (persistent — saved to ~/.nickai/risk.json).
+	riskLimits *risk.RiskLimits
+
+	// Strategy state (persistent — saved to ~/.nickai/strategies.json).
+	strategies      []strategy.TWAPStrategy
+	strategyTicking bool
+
+	// Notification config (persistent — saved to ~/.nickai/notify.json).
+	notifyConfig *notify.Config
+
+	// Automation state (persistent — saved to ~/.nickai/automations.json).
+	automations      []automation.AutoRule
+	autoTicking      bool
+	pendingAutoRule  *automation.AutoRule
+	pendingAutoPrice float64
 
 	// Overlay dialog state.
 	dialog DialogState
@@ -225,9 +273,15 @@ func New() Model {
 	cfg, _ := config.Load()
 	client := api.NewClient(cfg)
 
+	// Load risk limits from disk.
+	riskLimits, _ := risk.Load()
+
 	// Create tool registry and register built-in trading tools.
+	// riskFn closure captures the pointer — updates to riskLimits are visible.
+	riskLimitsPtr := &riskLimits
+	riskFn := func() *risk.RiskLimits { return *riskLimitsPtr }
 	registry := tools.NewRegistry()
-	tools.RegisterBuiltins(registry, client)
+	tools.RegisterBuiltins(registry, client, riskFn)
 
 	// Connect to external MCP servers (if configured in ~/.nickai/mcp.json).
 	var mcpMgr *mcp.ClientManager
@@ -267,6 +321,33 @@ func New() Model {
 	savedAlerts, _ := alert.Load()
 	savedTriggers, _ := trigger.Active()
 
+	// Load active TWAP strategies from disk.
+	savedStrategies, _ := strategy.Load()
+
+	// Load notification config.
+	notifyCfg, _ := notify.Load()
+
+	// Load automation rules.
+	savedAutomations, _ := automation.Load()
+
+	// Update risk info on agent.
+	if agent != nil && riskLimits != nil && !riskLimits.IsEmpty() {
+		agent.SetRiskInfo(riskPromptFromLimits(riskLimits))
+	}
+
+	// Update automation hint on agent.
+	if agent != nil && len(savedAutomations) > 0 {
+		activeCount := 0
+		for _, r := range savedAutomations {
+			if r.Status == "active" {
+				activeCount++
+			}
+		}
+		if activeCount > 0 {
+			agent.SetAutoInfo(fmt.Sprintf("The user has %d active automation rule(s). You can create new ones with the create_automation tool.", activeCount))
+		}
+	}
+
 	return Model{
 		textInput:     ti,
 		vimMode:       ModeInsert,
@@ -278,6 +359,10 @@ func New() Model {
 		inputHistory:  inputHistory,
 		alerts:       savedAlerts,
 		triggers:     savedTriggers,
+		riskLimits:   riskLimits,
+		strategies:   savedStrategies,
+		notifyConfig: notifyCfg,
+		automations:  savedAutomations,
 		cfg:          cfg,
 		client:       client,
 		agent:        agent,
@@ -305,6 +390,32 @@ func (m Model) Init() tea.Cmd {
 	if len(m.alerts) > 0 || len(m.triggers) > 0 {
 		m.alertTicking = true
 		cmds = append(cmds, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return alertCheckMsg{} }))
+	}
+	// Resume strategy ticking if we have active strategies.
+	activeStrats := 0
+	for _, s := range m.strategies {
+		if s.Status == "active" {
+			activeStrats++
+		}
+	}
+	if activeStrats > 0 {
+		m.strategyTicking = true
+		cmds = append(cmds, tea.Tick(60*time.Second, func(t time.Time) tea.Msg { return strategyTickMsg{} }))
+	}
+	// Resume automation ticking if we have active rules.
+	activeAutos := 0
+	for _, r := range m.automations {
+		if r.Status == "active" {
+			activeAutos++
+		}
+	}
+	if activeAutos > 0 {
+		m.autoTicking = true
+		cmds = append(cmds, tea.Tick(60*time.Second, func(t time.Time) tea.Msg { return autoTickMsg{} }))
+	}
+	// Listen for journal entries from tool executors.
+	if m.toolRegistry != nil {
+		cmds = append(cmds, waitForJournalEntry(m.toolRegistry.JournalCh))
 	}
 	return tea.Batch(cmds...)
 }
@@ -424,6 +535,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendingAITrade = &msg.req
 		m.vimMode = ModeConfirm
 		m.textInput.Blur()
+		// Capture last AI message as rationale for journal.
+		for i := len(m.messages) - 1; i >= 0; i-- {
+			if !m.messages[i].isUser {
+				m.pendingRationale = m.messages[i].content
+				break
+			}
+		}
 		// Show the trade confirmation card in chat.
 		confirmCard := WarningStyle.Render("  AI TRADE REQUEST ") + "\n" +
 			"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(msg.req.Display) + "\n" +
@@ -519,6 +637,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			DimStyle.Render(fmt.Sprintf("  (target: %s %s)", msg.operator, formatPrice(msg.target)))
 		m.addBotMessage(alertContent)
 		m.updateViewport()
+		notify.Send(m.notifyConfig, "Price Alert",
+			fmt.Sprintf("%s is now %s (target: %s %s)", msg.symbol, formatPrice(msg.currentPrice), msg.operator, formatPrice(msg.target)))
 		return m, nil
 
 	case triggerFiredMsg:
@@ -529,6 +649,147 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		confirmCard := "\a" + RenderTriggerConfirm(msg.trigger, msg.price)
 		m.addBotMessage(confirmCard)
 		m.updateViewport()
+		notify.Send(m.notifyConfig, "Trigger Fired",
+			fmt.Sprintf("%s hit %s — %s %g %s", msg.trigger.Symbol, formatPrice(msg.price),
+				strings.ToUpper(msg.trigger.Action.Side), msg.trigger.Action.Quantity, msg.trigger.Symbol))
+		return m, nil
+
+	case journalEntryMsg:
+		// Attach pending rationale and save journal entry.
+		entry := msg.entry
+		if m.pendingRationale != "" {
+			entry.Rationale = m.pendingRationale
+			m.pendingRationale = ""
+		}
+		_ = journal.Add(entry)
+		// Re-listen for more journal entries.
+		if m.toolRegistry != nil {
+			return m, waitForJournalEntry(m.toolRegistry.JournalCh)
+		}
+		return m, nil
+
+	case strategyTickMsg:
+		activeStrats := 0
+		for _, s := range m.strategies {
+			if s.Status == "active" {
+				activeStrats++
+			}
+		}
+		if activeStrats == 0 {
+			m.strategyTicking = false
+			return m, nil
+		}
+		// Check if any slice is due.
+		now := time.Now()
+		client := m.client
+		strategiesCopy := make([]strategy.TWAPStrategy, len(m.strategies))
+		copy(strategiesCopy, m.strategies)
+		return m, tea.Batch(
+			func() tea.Msg {
+				for _, s := range strategiesCopy {
+					if s.Status != "active" {
+						continue
+					}
+					if now.After(s.NextSliceAt) {
+						// Fetch current price.
+						baseSymbol := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(s.Symbol, "USDT"), "USDC"), "USD")
+						prices, err := client.GetPrices([]string{baseSymbol})
+						if err != nil || len(prices) == 0 {
+							continue
+						}
+						return strategySliceMsg{strategy: s, price: prices[0].Price}
+					}
+				}
+				return nil
+			},
+			tea.Tick(60*time.Second, func(t time.Time) tea.Msg { return strategyTickMsg{} }),
+		)
+
+	case strategySliceMsg:
+		// Show strategy slice confirmation — user must approve.
+		s := msg.strategy
+		m.pendingStrategySlice = &s
+		m.pendingSlicePrice = msg.price
+		m.vimMode = ModeConfirm
+		m.textInput.Blur()
+		confirmCard := "\a" + RenderStrategySliceConfirm(s, msg.price)
+		m.addBotMessage(confirmCard)
+		m.updateViewport()
+		notify.Send(m.notifyConfig, "TWAP Slice Due",
+			fmt.Sprintf("%s %s — slice %d/%d", strings.ToUpper(s.Side), s.Symbol, s.Executed+1, s.SliceCount))
+		return m, nil
+
+	case autoTickMsg:
+		activeRules := 0
+		for _, r := range m.automations {
+			if r.Status == "active" {
+				activeRules++
+			}
+		}
+		if activeRules == 0 {
+			m.autoTicking = false
+			return m, nil
+		}
+		now := time.Now()
+		client := m.client
+		rulesCopy := make([]automation.AutoRule, len(m.automations))
+		copy(rulesCopy, m.automations)
+		return m, tea.Batch(
+			func() tea.Msg {
+				for _, r := range rulesCopy {
+					if r.Status != "active" {
+						continue
+					}
+					switch r.Type {
+					case automation.RuleSchedule:
+						if !r.NextCheck.IsZero() && now.Before(r.NextCheck) {
+							continue
+						}
+						// Time to fire — fetch price.
+						baseSymbol := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(r.ActionSymbol, "USDT"), "USDC"), "USD")
+						prices, err := client.GetPrices([]string{baseSymbol})
+						if err != nil || len(prices) == 0 {
+							continue
+						}
+						return autoRuleFiredMsg{rule: r, price: prices[0].Price}
+
+					case automation.RuleCondition:
+						if r.Symbol == "" {
+							continue
+						}
+						baseSymbol := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(r.Symbol, "USDT"), "USDC"), "USD")
+						prices, err := client.GetPrices([]string{baseSymbol})
+						if err != nil || len(prices) == 0 {
+							continue
+						}
+						price := prices[0].Price
+						fired := false
+						if r.Operator == ">" && price > r.Target {
+							fired = true
+						}
+						if r.Operator == "<" && price < r.Target {
+							fired = true
+						}
+						if fired {
+							return autoRuleFiredMsg{rule: r, price: price}
+						}
+					}
+				}
+				return nil
+			},
+			tea.Tick(60*time.Second, func(t time.Time) tea.Msg { return autoTickMsg{} }),
+		)
+
+	case autoRuleFiredMsg:
+		r := msg.rule
+		m.pendingAutoRule = &r
+		m.pendingAutoPrice = msg.price
+		m.vimMode = ModeConfirm
+		m.textInput.Blur()
+		confirmCard := "\a" + RenderAutoConfirm(r, msg.price)
+		m.addBotMessage(confirmCard)
+		m.updateViewport()
+		notify.Send(m.notifyConfig, "Automation Fired", r.Description)
 		return m, nil
 
 	case tickerFetchMsg:
@@ -807,6 +1068,78 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return alertCheckMsg{} })
 			}
 			return m, nil
+
+		case commands.TypeRisk:
+			output := m.handleRisk(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			return m, nil
+
+		case commands.TypeStrategy:
+			output, startTick := m.handleStrategy(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if startTick && !m.strategyTicking {
+				m.strategyTicking = true
+				return m, tea.Tick(60*time.Second, func(t time.Time) tea.Msg { return strategyTickMsg{} })
+			}
+			return m, nil
+
+		case commands.TypeNotify:
+			output := m.handleNotify(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			return m, nil
+
+		case commands.TypeAuto:
+			output, startTick := m.handleAuto(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if startTick && !m.autoTicking {
+				m.autoTicking = true
+				return m, tea.Tick(60*time.Second, func(t time.Time) tea.Msg { return autoTickMsg{} })
+			}
+			return m, nil
+
+		case commands.TypeAnalytics:
+			// Async API call with loading spinner.
+			m.loading = true
+			m.loadingFrame = 0
+			m.loadingText = "Computing analytics..."
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+			m.updateViewport()
+			rCopy := result
+			return m, tea.Batch(
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					output := m.renderResult(rCopy)
+					return apiResponseMsg{content: output}
+				},
+			)
+
+		case commands.TypeAnalyze:
+			// Async API call with loading spinner.
+			m.loading = true
+			m.loadingFrame = 0
+			m.loadingText = "Analyzing market..."
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+			m.updateViewport()
+			rCopy := result
+			return m, tea.Batch(
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					output := m.renderResult(rCopy)
+					return apiResponseMsg{content: output}
+				},
+			)
 
 		case commands.TypePrice, commands.TypeStatus, commands.TypeOrders,
 			commands.TypeSnapshot, commands.TypeMarket, commands.TypePnl,
@@ -1208,12 +1541,33 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				Type:     t.Action.Type,
 				Price:    t.Action.Price,
 			}
+
+			// Risk check for trigger trades.
+			if m.riskLimits != nil && !m.riskLimits.IsEmpty() {
+				portfolio, _ := m.client.GetPortfolio()
+				checkPrice := t.Action.Price
+				if checkPrice == 0 {
+					baseSymbol := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(symbol, "USDT"), "USDC"), "USD")
+					if prices, err := m.client.GetPrices([]string{baseSymbol}); err == nil && len(prices) > 0 {
+						checkPrice = prices[0].Price
+					}
+				}
+				result := risk.CheckOrder(m.riskLimits, portfolio, symbol, t.Action.Side, t.Action.Quantity, checkPrice)
+				if !result.Allowed {
+					m.addBotMessage(ErrorStyle.Render("  Trigger blocked: ") + result.Reason)
+					m.updateViewport()
+					return m, textinput.Blink
+				}
+			}
+
 			m.loading = true
 			m.loadingFrame = 0
 			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " Executing triggered trade...")
 			m.updateViewport()
 			client := m.client
 			width := m.width
+			triggerID := t.ID
+			triggerSymbol := t.Symbol
 			return m, tea.Batch(
 				textinput.Blink,
 				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
@@ -1222,6 +1576,170 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						return apiResponseMsg{content: RenderOrderError(req.Side, req.Symbol, err)}
 					}
+					// Journal entry for trigger trades.
+					filledPrice := order.FilledPrice
+					if filledPrice == 0 {
+						filledPrice = order.Price
+					}
+					_ = journal.Add(journal.JournalEntry{
+						ID:        randomID(8),
+						OrderID:   order.ID,
+						Symbol:    order.Symbol,
+						Side:      order.Side,
+						Quantity:  order.Quantity,
+						Price:     filledPrice,
+						Source:    "trigger",
+						Rationale: fmt.Sprintf("Trigger %s fired on %s", triggerID[:6], triggerSymbol),
+						Timestamp: time.Now(),
+					})
+					return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+				},
+			)
+		}
+		// Automation rule trade confirmation.
+		if m.pendingAutoRule != nil {
+			r := *m.pendingAutoRule
+			autoPrice := m.pendingAutoPrice
+			m.pendingAutoRule = nil
+			m.pendingAutoPrice = 0
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+
+			qty := r.ActionValue / autoPrice
+			symbol := strings.ToUpper(r.ActionSymbol)
+			if !strings.HasSuffix(symbol, "USDT") && !strings.HasSuffix(symbol, "USDC") && !strings.HasSuffix(symbol, "USD") {
+				symbol += "USDT"
+			}
+
+			side := r.Action
+			if side == "sell_all" {
+				side = "sell"
+			}
+			req := api.PlaceOrderRequest{
+				Symbol:   symbol,
+				Side:     side,
+				Quantity: qty,
+				Type:     r.ActionType,
+			}
+
+			// Risk check.
+			if m.riskLimits != nil && !m.riskLimits.IsEmpty() {
+				portfolio, _ := m.client.GetPortfolio()
+				result := risk.CheckOrder(m.riskLimits, portfolio, symbol, side, qty, autoPrice)
+				if !result.Allowed {
+					m.addBotMessage(ErrorStyle.Render("  Automation blocked: ") + result.Reason)
+					m.updateViewport()
+					return m, textinput.Blink
+				}
+			}
+
+			_ = automation.MarkFired(r.ID)
+			// Reload automations.
+			m.automations, _ = automation.Load()
+
+			m.loading = true
+			m.loadingFrame = 0
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " Executing automation trade...")
+			m.updateViewport()
+			client := m.client
+			width := m.width
+			ruleID := r.ID
+			ruleDesc := r.Description
+			notifyCfg := m.notifyConfig
+			return m, tea.Batch(
+				textinput.Blink,
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					order, err := client.PlaceOrder(req)
+					if err != nil {
+						return apiResponseMsg{content: RenderOrderError(req.Side, req.Symbol, err)}
+					}
+					filledPrice := order.FilledPrice
+					if filledPrice == 0 {
+						filledPrice = order.Price
+					}
+					_ = journal.Add(journal.JournalEntry{
+						ID:        randomID(8),
+						OrderID:   order.ID,
+						Symbol:    order.Symbol,
+						Side:      order.Side,
+						Quantity:  order.Quantity,
+						Price:     filledPrice,
+						Source:    "automation",
+						Rationale: fmt.Sprintf("Auto rule %s: %s", ruleID[:6], ruleDesc),
+						Timestamp: time.Now(),
+					})
+					notify.Send(notifyCfg, "Trade Executed",
+						fmt.Sprintf("%s %s — %s", strings.ToUpper(order.Side), order.Symbol, ruleDesc))
+					return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+				},
+			)
+		}
+		// Strategy slice confirmation.
+		if m.pendingStrategySlice != nil {
+			s := *m.pendingStrategySlice
+			slicePrice := m.pendingSlicePrice
+			m.pendingStrategySlice = nil
+			m.pendingSlicePrice = 0
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			// Calculate quantity from slice value.
+			qty := s.SliceValue / slicePrice
+			symbol := strings.ToUpper(s.Symbol)
+			if !strings.HasSuffix(symbol, "USDT") && !strings.HasSuffix(symbol, "USDC") && !strings.HasSuffix(symbol, "USD") {
+				symbol += "USDT"
+			}
+			req := api.PlaceOrderRequest{
+				Symbol:   symbol,
+				Side:     s.Side,
+				Quantity: qty,
+				Type:     "market",
+			}
+
+			// Risk check for strategy slices.
+			if m.riskLimits != nil && !m.riskLimits.IsEmpty() {
+				portfolio, _ := m.client.GetPortfolio()
+				result := risk.CheckOrder(m.riskLimits, portfolio, symbol, s.Side, qty, slicePrice)
+				if !result.Allowed {
+					m.addBotMessage(ErrorStyle.Render("  Strategy slice blocked: ") + result.Reason)
+					m.updateViewport()
+					return m, textinput.Blink
+				}
+			}
+
+			m.loading = true
+			m.loadingFrame = 0
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " Executing TWAP slice...")
+			m.updateViewport()
+			client := m.client
+			width := m.width
+			stratID := s.ID
+			return m, tea.Batch(
+				textinput.Blink,
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					order, err := client.PlaceOrder(req)
+					if err != nil {
+						return apiResponseMsg{content: RenderOrderError(req.Side, req.Symbol, err)}
+					}
+					// Mark slice as executed.
+					_ = strategy.MarkSliceExecuted(stratID, order.ID)
+					// Journal entry for strategy trade.
+					filledPrice := order.FilledPrice
+					if filledPrice == 0 {
+						filledPrice = order.Price
+					}
+					_ = journal.Add(journal.JournalEntry{
+						ID:        randomID(8),
+						OrderID:   order.ID,
+						Symbol:    order.Symbol,
+						Side:      order.Side,
+						Quantity:  order.Quantity,
+						Price:     filledPrice,
+						Source:    "strategy",
+						Rationale: fmt.Sprintf("TWAP slice %d/%d for %s", s.Executed+1, s.SliceCount, s.ID[:6]),
+						Timestamp: time.Now(),
+					})
 					return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
 				},
 			)
@@ -1232,6 +1750,29 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.textInput.Focus()
 			return m, textinput.Blink
 		}
+
+		// Risk check for manual trades.
+		if m.riskLimits != nil && !m.riskLimits.IsEmpty() && m.pendingTrade != nil {
+			portfolio, _ := m.client.GetPortfolio()
+			// Fetch price for risk check.
+			checkPrice := m.pendingTrade.Price
+			if checkPrice == 0 {
+				baseSymbol := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(m.pendingTrade.Symbol, "USDT"), "USDC"), "USD")
+				if prices, err := m.client.GetPrices([]string{baseSymbol}); err == nil && len(prices) > 0 {
+					checkPrice = prices[0].Price
+				}
+			}
+			result := risk.CheckOrder(m.riskLimits, portfolio, m.pendingTrade.Symbol, m.pendingTrade.Side, m.pendingTrade.Quantity, checkPrice)
+			if !result.Allowed {
+				m.pendingTrade = nil
+				m.vimMode = ModeInsert
+				m.textInput.Focus()
+				m.addBotMessage(ErrorStyle.Render("  Risk limit: ") + result.Reason)
+				m.updateViewport()
+				return m, textinput.Blink
+			}
+		}
+
 		m.loading = true
 		m.loadingFrame = 0
 		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " Executing trade...")
@@ -1252,6 +1793,21 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					return apiResponseMsg{content: RenderOrderError(req.Side, req.Symbol, err)}
 				}
+				// Journal entry for manual trades.
+				filledPrice := order.FilledPrice
+				if filledPrice == 0 {
+					filledPrice = order.Price
+				}
+				_ = journal.Add(journal.JournalEntry{
+					ID:        randomID(8),
+					OrderID:   order.ID,
+					Symbol:    order.Symbol,
+					Side:      order.Side,
+					Quantity:  order.Quantity,
+					Price:     filledPrice,
+					Source:    "manual",
+					Timestamp: time.Now(),
+				})
 				return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
 			},
 		)
@@ -1262,6 +1818,7 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			confirmCh := m.toolRegistry.ConfirmCh
 			m.toolRegistry.ResponseCh <- tools.ConfirmResponse{Approved: false}
 			m.pendingAITrade = nil
+			m.pendingRationale = ""
 			m.vimMode = ModeInsert
 			m.textInput.Focus()
 			m.addBotMessage(DimStyle.Render("  AI trade declined."))
@@ -1282,6 +1839,26 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.vimMode = ModeInsert
 			m.textInput.Focus()
 			m.addBotMessage(DimStyle.Render("  Trigger skipped. It won't fire again."))
+			m.updateViewport()
+			return m, textinput.Blink
+		}
+		// Automation rule cancellation.
+		if m.pendingAutoRule != nil {
+			m.pendingAutoRule = nil
+			m.pendingAutoPrice = 0
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			m.addBotMessage(DimStyle.Render("  Automation trade skipped."))
+			m.updateViewport()
+			return m, textinput.Blink
+		}
+		// Strategy slice cancellation.
+		if m.pendingStrategySlice != nil {
+			m.pendingStrategySlice = nil
+			m.pendingSlicePrice = 0
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			m.addBotMessage(DimStyle.Render("  Strategy slice skipped."))
 			m.updateViewport()
 			return m, textinput.Blink
 		}
@@ -1738,6 +2315,121 @@ func (m Model) composeSuggestions(base string) string {
 	return strings.Join(baseLines, "\n")
 }
 
+// --- Notify handling ---
+
+func (m *Model) handleNotify(args []string) string {
+	if len(args) == 0 {
+		return RenderNotifyHelp()
+	}
+
+	sub := strings.ToLower(args[0])
+
+	switch sub {
+	case "show":
+		return RenderNotifyConfig(m.notifyConfig)
+
+	case "set":
+		if len(args) < 3 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/notify set desktop on|off")
+		}
+		key := strings.ToLower(args[1])
+		value := strings.ToLower(args[2])
+
+		switch key {
+		case "desktop":
+			m.notifyConfig.Desktop = (value == "on" || value == "true" || value == "1")
+		case "sound":
+			m.notifyConfig.Sound = (value == "on" || value == "true" || value == "1")
+		case "webhook":
+			m.notifyConfig.WebhookURL = args[2] // preserve case for URL
+		default:
+			return ErrorStyle.Render("  Unknown setting: ") + key +
+				"\n" + DimStyle.Render("  Valid keys: desktop, sound, webhook")
+		}
+
+		_ = notify.Save(m.notifyConfig)
+		return BotMsgStyle.Render("nick: ") + "Notification setting updated." +
+			"\n" + RenderNotifyConfig(m.notifyConfig)
+
+	case "clear":
+		m.notifyConfig = &notify.Config{}
+		_ = notify.Save(m.notifyConfig)
+		return BotMsgStyle.Render("nick: ") + "Notification settings cleared."
+
+	case "test":
+		if m.notifyConfig.IsEmpty() {
+			return ErrorStyle.Render("  No notification channels configured.") + "\n" +
+				DimStyle.Render("  Set one first with ") + CommandStyle.Render("/notify set desktop on")
+		}
+		notify.Send(m.notifyConfig, "NickAI Test", "Notifications are working!")
+		return BotMsgStyle.Render("nick: ") + "Test notification sent."
+	}
+
+	return ErrorStyle.Render("  Unknown subcommand: ") + sub + "\n" +
+		DimStyle.Render("  Try: show, set, clear, test")
+}
+
+// --- Automation handling ---
+
+func (m *Model) handleAuto(args []string) (string, bool) {
+	if len(args) == 0 {
+		return RenderAutoHelp(), false
+	}
+
+	sub := strings.ToLower(args[0])
+
+	switch sub {
+	case "list":
+		m.automations, _ = automation.Load()
+		return RenderAutoList(m.automations), false
+
+	case "pause":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/auto pause <id>"), false
+		}
+		if err := automation.Pause(args[1]); err != nil {
+			return ErrorStyle.Render("  " + err.Error()), false
+		}
+		m.automations, _ = automation.Load()
+		return BotMsgStyle.Render("nick: ") + "Automation rule paused.", false
+
+	case "resume":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/auto resume <id>"), false
+		}
+		if err := automation.Resume(args[1]); err != nil {
+			return ErrorStyle.Render("  " + err.Error()), false
+		}
+		m.automations, _ = automation.Load()
+		// May need to start tick.
+		needTick := false
+		for _, r := range m.automations {
+			if r.Status == "active" {
+				needTick = true
+				break
+			}
+		}
+		return BotMsgStyle.Render("nick: ") + "Automation rule resumed.", needTick
+
+	case "remove", "rm", "delete":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/auto remove <id>"), false
+		}
+		if err := automation.Remove(args[1]); err != nil {
+			return ErrorStyle.Render("  " + err.Error()), false
+		}
+		m.automations, _ = automation.Load()
+		return BotMsgStyle.Render("nick: ") + "Automation rule removed.", false
+	}
+
+	return ErrorStyle.Render("  Unknown subcommand: ") + sub + "\n" +
+		DimStyle.Render("  Try: list, pause, resume, remove"), false
+}
+
 // --- Helper: streaming ---
 
 // waitForStreamToken returns a tea.Cmd that reads the next token from a
@@ -1880,6 +2572,36 @@ func (m *Model) renderResult(r commands.Result) string {
 
 	case commands.TypeTrigger:
 		return m.handleTrigger(r.Args)
+
+	case commands.TypeRisk:
+		return m.handleRisk(r.Args)
+
+	case commands.TypeStrategy:
+		output, _ := m.handleStrategy(r.Args)
+		return output
+
+	case commands.TypeNotify:
+		return m.handleNotify(r.Args)
+
+	case commands.TypeAnalytics:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		return RenderAnalytics(m.client, m.width)
+
+	case commands.TypeAnalyze:
+		if !m.client.IsConfigured() {
+			return connectPrompt()
+		}
+		if len(r.Args) == 0 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/analyze BTC")
+		}
+		return RenderAnalysis(m.client, strings.ToUpper(r.Args[0]), m.width)
+
+	case commands.TypeAuto:
+		output, _ := m.handleAuto(r.Args)
+		return output
 
 	case commands.TypeTheme:
 		return m.handleTheme(r.Args)
@@ -2424,6 +3146,180 @@ func (m *Model) handleTrade(side string, args []string) string {
 	return RenderTradeConfirmCard(&req, m.width)
 }
 
+// handleRisk processes /risk subcommands.
+func (m *Model) handleRisk(args []string) string {
+	if len(args) == 0 {
+		return RenderRiskHelp()
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "show":
+		return RenderRiskLimits(m.riskLimits)
+
+	case "clear":
+		m.riskLimits = &risk.RiskLimits{}
+		_ = risk.Save(m.riskLimits)
+		if m.agent != nil {
+			m.agent.SetRiskInfo("")
+		}
+		return BotMsgStyle.Render("nick: ") + "All risk limits cleared."
+
+	case "set":
+		if len(args) < 3 {
+			return RenderRiskHelp()
+		}
+		key := strings.ToLower(args[1])
+		valueStr := strings.TrimPrefix(args[2], "$")
+		valueStr = strings.TrimSuffix(valueStr, "%")
+		value, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil || value <= 0 {
+			return ErrorStyle.Render("  Invalid value: ") + args[2]
+		}
+
+		if m.riskLimits == nil {
+			m.riskLimits = &risk.RiskLimits{}
+		}
+
+		switch key {
+		case "max-order", "maxorder":
+			m.riskLimits.MaxOrderValue = value
+		case "max-position", "maxposition":
+			m.riskLimits.MaxPositionPct = value
+		case "daily-loss", "dailyloss":
+			m.riskLimits.DailyLossPct = value
+		default:
+			return ErrorStyle.Render("  Unknown limit: ") + key + "\n" +
+				DimStyle.Render("  Valid: max-order, max-position, daily-loss")
+		}
+
+		_ = risk.Save(m.riskLimits)
+		if m.agent != nil {
+			m.agent.SetRiskInfo(riskPromptFromLimits(m.riskLimits))
+		}
+		return BotMsgStyle.Render("nick: ") + "Risk limit set.\n" + RenderRiskLimits(m.riskLimits)
+
+	default:
+		return RenderRiskHelp()
+	}
+}
+
+// handleStrategy processes /strategy subcommands.
+func (m *Model) handleStrategy(args []string) (string, bool) {
+	if len(args) == 0 {
+		return RenderStrategyHelp(), false
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "list", "ls":
+		// Reload from disk to get latest state.
+		all, _ := strategy.Load()
+		m.strategies = all
+		return RenderStrategyList(all), false
+
+	case "cancel":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/strategy cancel <id>"), false
+		}
+		if err := strategy.Cancel(args[1]); err != nil {
+			return ErrorStyle.Render("  " + err.Error()), false
+		}
+		// Reload.
+		all, _ := strategy.Load()
+		m.strategies = all
+		return BotMsgStyle.Render("nick: ") + "Strategy cancelled.", false
+
+	case "twap":
+		// /strategy twap ETH buy $2000 4h
+		if len(args) < 5 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/strategy twap <SYMBOL> <buy|sell> $<VALUE> <DURATION>"), false
+		}
+		symbol := strings.ToUpper(args[1])
+		side := strings.ToLower(args[2])
+		if side != "buy" && side != "sell" {
+			return ErrorStyle.Render("  Side must be buy or sell"), false
+		}
+		valueStr := strings.TrimPrefix(args[3], "$")
+		totalValue, err := strconv.ParseFloat(valueStr, 64)
+		if err != nil || totalValue <= 0 {
+			return ErrorStyle.Render("  Invalid value: ") + args[3], false
+		}
+		dur, err := strategy.ParseDuration(args[4])
+		if err != nil {
+			return ErrorStyle.Render("  " + err.Error()), false
+		}
+
+		sliceCount, intervalSec := strategy.CalcSlices(dur)
+		sliceValue := totalValue / float64(sliceCount)
+
+		s := strategy.TWAPStrategy{
+			ID:          randomID(8),
+			Symbol:      symbol,
+			Side:        side,
+			TotalValue:  totalValue,
+			Duration:    args[4],
+			IntervalSec: intervalSec,
+			SliceCount:  sliceCount,
+			SliceValue:  sliceValue,
+			Executed:    0,
+			Status:      "active",
+			CreatedAt:   time.Now(),
+			NextSliceAt: time.Now().Add(time.Duration(intervalSec) * time.Second),
+		}
+
+		if err := strategy.Add(s); err != nil {
+			return ErrorStyle.Render("  Failed to save: ") + err.Error(), false
+		}
+
+		// Reload.
+		all, _ := strategy.Load()
+		m.strategies = all
+
+		return BotMsgStyle.Render("nick: ") + "TWAP strategy created.\n" +
+			"  " + DimStyle.Render("Symbol: ") + BrandStyle.Render(symbol) +
+			DimStyle.Render("  Side: ") + strings.ToUpper(side) +
+			DimStyle.Render(fmt.Sprintf("  Value: $%.0f  Duration: %s", totalValue, args[4])) + "\n" +
+			"  " + DimStyle.Render(fmt.Sprintf("%d slices × $%.2f every %dm", sliceCount, sliceValue, intervalSec/60)) + "\n" +
+			"  " + DimStyle.Render("ID: ") + s.ID, true
+
+	default:
+		return RenderStrategyHelp(), false
+	}
+}
+
+// riskPromptFromLimits builds the risk info string for the AI system prompt.
+func riskPromptFromLimits(limits *risk.RiskLimits) string {
+	if limits == nil || limits.IsEmpty() {
+		return ""
+	}
+	var parts []string
+	parts = append(parts, "RISK GUARDRAILS ARE ACTIVE. Before placing trades, be aware of these limits:")
+	if limits.MaxOrderValue > 0 {
+		parts = append(parts, fmt.Sprintf("- Maximum single order value: $%.0f", limits.MaxOrderValue))
+	}
+	if limits.MaxPositionPct > 0 {
+		parts = append(parts, fmt.Sprintf("- Maximum position size: %.0f%% of portfolio", limits.MaxPositionPct))
+	}
+	if limits.DailyLossPct > 0 {
+		parts = append(parts, fmt.Sprintf("- Daily loss limit: %.0f%% (all trades blocked if exceeded)", limits.DailyLossPct))
+	}
+	parts = append(parts, "If a trade is rejected by risk limits, explain the reason to the user and suggest an alternative that fits within limits.")
+	return strings.Join(parts, "\n")
+}
+
+// waitForJournalEntry listens for journal entries from tool executors.
+func waitForJournalEntry(ch <-chan journal.JournalEntry) tea.Cmd {
+	return func() tea.Msg {
+		entry, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return journalEntryMsg{entry: entry}
+	}
+}
+
 // handleTheme processes /theme command.
 func (m *Model) handleTheme(args []string) string {
 	if len(args) == 0 {
@@ -2838,16 +3734,28 @@ func (m Model) statusIndicators() string {
 	}
 
 	alertPart := ""
-	if len(m.alerts) > 0 || len(m.triggers) > 0 {
-		parts := []string{}
-		if len(m.alerts) > 0 {
-			parts = append(parts, fmt.Sprintf("⚡%d", len(m.alerts)))
+	statusParts := []string{}
+	if len(m.alerts) > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("⚡%d", len(m.alerts)))
+	}
+	if len(m.triggers) > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("⏱%d", len(m.triggers)))
+	}
+	activeStrats := 0
+	for _, s := range m.strategies {
+		if s.Status == "active" {
+			activeStrats++
 		}
-		if len(m.triggers) > 0 {
-			parts = append(parts, fmt.Sprintf("⏱%d", len(m.triggers)))
-		}
+	}
+	if activeStrats > 0 {
+		statusParts = append(statusParts, fmt.Sprintf("📊%d", activeStrats))
+	}
+	if m.riskLimits != nil && !m.riskLimits.IsEmpty() {
+		statusParts = append(statusParts, "🛡")
+	}
+	if len(statusParts) > 0 {
 		alertPart = DimStyle.Render(" ┃ ") +
-			lipgloss.NewStyle().Foreground(ColorWarning).Render(strings.Join(parts, " "))
+			lipgloss.NewStyle().Foreground(ColorWarning).Render(strings.Join(statusParts, " "))
 	}
 
 	return connDot + modelName + alertPart

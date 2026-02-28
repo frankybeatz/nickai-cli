@@ -433,6 +433,163 @@ Subcommands:
 		},
 		seeAlso: []string{"alert", "buy", "sell"},
 	},
+	"risk": {
+		name:     "risk - portfolio risk guardrails",
+		synopsis: "/risk <show|set|clear> [args...]",
+		desc: `Manage risk guardrails that protect your portfolio from
+oversized trades and excessive losses. Risk limits are checked
+before every trade — AI, manual, trigger, and strategy trades.
+
+Subcommands:
+  show                              Display current risk limits
+  set max-order <amount>            Max single order value ($)
+  set max-position <pct>            Max position % of portfolio
+  set daily-loss <pct>              Max daily loss % (from $100K)
+  clear                             Remove all risk limits
+
+When a risk limit blocks a trade, the AI receives an error
+explaining why, so it can adjust its approach.
+
+Limits are stored at ~/.nickai/risk.json and persist across
+sessions.`,
+		examples: []string{
+			"/risk show",
+			"/risk set max-order 5000",
+			"/risk set max-position 10",
+			"/risk set daily-loss 5",
+			"/risk clear",
+		},
+		seeAlso: []string{"buy", "sell", "strategy", "trigger"},
+	},
+	"strategy": {
+		name:     "strategy - TWAP time-weighted strategies",
+		synopsis: "/strategy <twap|list|cancel> [args...]",
+		desc: `Create and manage TWAP (Time-Weighted Average Price) strategies
+that split large orders into smaller slices executed at regular
+intervals.
+
+Subcommands:
+  twap <SYM> <buy|sell> <$VALUE> <DURATION>   Create TWAP strategy
+  list                                         Show all strategies
+  cancel <id>                                  Cancel by ID prefix
+
+Duration format: "4h", "1h", "30m", etc. Slices are calculated
+automatically (minimum 4 slices, one every 15 minutes minimum).
+
+Each slice triggers a confirmation prompt before execution.
+Risk guardrails apply to each slice individually.
+
+Alias: /strat
+
+Strategies persist at ~/.nickai/strategies.json.`,
+		examples: []string{
+			"/strategy twap ETH buy $2000 4h",
+			"/strategy twap SOL sell $500 1h",
+			"/strategy list",
+			"/strategy cancel a1b2",
+			"/strat list",
+		},
+		seeAlso: []string{"risk", "buy", "sell", "trigger"},
+	},
+	"notify": {
+		name:     "notify - desktop & webhook notifications",
+		synopsis: "/notify <show|set|clear|test> [args...]",
+		desc: `Manage notification channels for alerts, trades, and strategy events.
+Notifications fire when alerts trigger, trades execute, and TWAP
+slices complete — even when you're not watching the terminal.
+
+Subcommands:
+  show                           Display current settings
+  set desktop on|off             Toggle macOS desktop notifications
+  set sound on|off               Toggle sound with notifications
+  set webhook <url>              Set a webhook URL for POST notifications
+  clear                          Reset all notification settings
+  test                           Send a test notification
+
+Desktop notifications use macOS native display notification.
+Webhook sends JSON POST with {title, body, timestamp}.
+
+Settings are stored at ~/.nickai/notify.json.`,
+		examples: []string{
+			"/notify show",
+			"/notify set desktop on",
+			"/notify set webhook https://hooks.example.com/notify",
+			"/notify test",
+			"/notify clear",
+		},
+		seeAlso: []string{"alert", "strategy", "auto"},
+	},
+	"analytics": {
+		name:     "analytics - portfolio analytics dashboard",
+		synopsis: "/analytics",
+		desc: `Display advanced portfolio analytics including Sharpe ratio,
+max drawdown, win rate, profit factor, allocation breakdown,
+and trade statistics.
+
+Metrics are calculated from your trade journal and current
+portfolio positions. Requires at least one trade in the journal.
+
+The AI can also access analytics via the get_analytics tool —
+try asking "how am I performing?"`,
+		examples: []string{"/analytics"},
+		seeAlso:  []string{"pnl", "history", "status"},
+	},
+	"analyze": {
+		name:     "analyze - AI market analysis with technical indicators",
+		synopsis: "/analyze <SYMBOL>",
+		desc: `Run technical analysis on a cryptocurrency symbol. Computes
+RSI (14), MACD (12/26/9), Bollinger Bands (20), SMA 20/50,
+trend direction, and fetches the Fear & Greed Index.
+
+Each indicator shows a signal (bullish/bearish/neutral) and
+a summary recommendation is generated from the combined signals.
+
+The AI can also run analysis via the analyze_market tool —
+try asking "should I buy ETH?"
+
+Price history uses synthetic data for paper trading. Connect
+a TradingView MCP server for real historical data.`,
+		examples: []string{
+			"/analyze BTC",
+			"/analyze ETH",
+			"/analyze SOL",
+		},
+		seeAlso: []string{"price", "chart", "analytics"},
+	},
+	"auto": {
+		name:     "auto - natural language automation rules",
+		synopsis: "/auto <list|pause|resume|remove> [args...]",
+		desc: `Manage automation rules created by the AI. Rules can be:
+
+  schedule   - Fire on a time schedule (daily, hourly, every 4h)
+  condition  - Fire when a price condition is met (BTC > 100000)
+  portfolio  - Fire on portfolio metrics (drawdown > 5%)
+
+Rules are created by asking the AI in natural language:
+  "buy $100 of BTC every day"
+  "sell all ETH if it goes above 5000"
+  "alert me if portfolio drops 5%"
+
+Each fire requires user confirmation before executing.
+Risk guardrails apply to all automation trades.
+
+Subcommands:
+  list                   Show all automation rules
+  pause <id>             Pause a rule (prefix match)
+  resume <id>            Resume a paused rule
+  remove <id>            Delete a rule
+
+Alias: /automation
+
+Rules are stored at ~/.nickai/automations.json.`,
+		examples: []string{
+			"/auto list",
+			"/auto pause a1b2c3",
+			"/auto resume a1b2c3",
+			"/auto remove a1b2c3",
+		},
+		seeAlso: []string{"trigger", "strategy", "risk", "notify"},
+	},
 	"watch": {
 		name:     "watch - live price monitor",
 		synopsis: "/watch <SYMBOL> [SYMBOL...]",
@@ -475,6 +632,10 @@ func RenderManPage(command string) string {
 		command = "model"
 	case "trig":
 		command = "trigger"
+	case "strat":
+		command = "strategy"
+	case "automation":
+		command = "auto"
 	}
 
 	page, ok := manPages[command]
@@ -553,6 +714,12 @@ func RenderManIndex() string {
 		{"chart", "ASCII sparkline chart"},
 		{"alert", "Set price alerts"},
 		{"trigger", "Conditional trading rules"},
+		{"risk", "Portfolio risk guardrails"},
+		{"strategy", "TWAP time-weighted strategies"},
+		{"notify", "Desktop & webhook notifications"},
+		{"analytics", "Portfolio analytics dashboard"},
+		{"analyze", "AI market analysis with indicators"},
+		{"auto", "Natural language automation rules"},
 		{"model", "Switch AI model"},
 		{"theme", "Switch color theme"},
 		{"config", "Manage configuration"},
