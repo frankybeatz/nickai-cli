@@ -77,7 +77,7 @@ Download from [Releases](https://github.com/frankybeatz/nickai-cli/releases), or
 make release    # builds darwin/linux/windows × arm64/amd64 to build/
 ```
 
-Requires Go 1.23+.
+Requires Go 1.25+.
 
 ## Quick Start
 
