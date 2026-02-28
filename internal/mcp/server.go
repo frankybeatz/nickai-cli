@@ -17,7 +17,7 @@ import (
 func ServeStdio(cfg *config.Config, version string) error {
 	client := api.NewClient(cfg)
 	registry := tools.NewRegistry()
-	tools.RegisterBuiltins(registry, client)
+	tools.RegisterBuiltins(registry, client, nil)
 
 	s := mcpserver.NewMCPServer(
 		"nickai",

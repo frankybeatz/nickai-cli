@@ -11,7 +11,7 @@
 ## v0.6 — AI-Powered Trading
 
 - [ ] Natural language strategies ("scale into ETH with $2000 over 4 hours" → TWAP)
-- [ ] Conditional triggers ("if BTC drops below 60k, sell half")
+- [x] Conditional triggers ("if BTC drops below 60k, sell half")
 - [ ] Portfolio rebalancing ("rebalance to 50/30/20 BTC/ETH/SOL")
 - [ ] AI trade journal (win rate, pattern analysis, suggestions)
 
@@ -24,12 +24,12 @@
 
 ## v0.8 — MCP Directory & Ecosystem
 
-- [ ] `/mcp list` — show connected servers and their tools
-- [ ] `/mcp add <name>` — install from curated registry
-- [ ] `/mcp remove <name>` — disconnect a server
-- [ ] `/mcp search <query>` — browse available servers
+- [x] `/mcp list` — show connected servers and their tools
+- [x] `/mcp add <name>` — install from curated registry
+- [x] `/mcp remove <name>` — disconnect a server
+- [x] `/mcp search <query>` — browse available servers
 - [ ] AI-powered MCP recommendations ("I need on-chain data" → suggests servers)
-- [ ] Permission model (trust tiers, confirmation on trade actions)
+- [x] Permission model (trust tiers, confirmation on trade actions)
 - [ ] Remote registry fetch (pull latest from GitHub or API)
 
 ## v0.9 — Strategy & Backtesting

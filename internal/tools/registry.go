@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/nickai/cli/internal/journal"
 )
 
 // ToolFunc executes a tool given raw JSON input and returns a JSON string result.
@@ -38,6 +40,9 @@ type Registry struct {
 	// Confirmation channels for tools that need user approval (e.g. place_order).
 	ConfirmCh  chan ConfirmRequest  // tool executor → UI
 	ResponseCh chan ConfirmResponse // UI → tool executor
+
+	// JournalCh receives trade journal entries from tool executors.
+	JournalCh chan journal.JournalEntry // tool executor → UI (buffered 10)
 }
 
 // NewRegistry creates an empty tool registry.
@@ -46,6 +51,7 @@ func NewRegistry() *Registry {
 		entries:    make(map[string]*ToolEntry),
 		ConfirmCh:  make(chan ConfirmRequest, 1),
 		ResponseCh: make(chan ConfirmResponse, 1),
+		JournalCh:  make(chan journal.JournalEntry, 10),
 	}
 }
 
