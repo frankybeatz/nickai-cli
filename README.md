@@ -4,19 +4,46 @@ Conversational trading terminal for [NickAI](https://getnick.ai). Paper trade, d
 
 ![demo](demo.gif)
 
-## What's New
+## Features
 
-### Streaming AI Responses
+### AI Trading Agent
+Chat naturally with **Nick**, your AI trading analyst. Ask "should I buy ETH?" and get data-driven analysis with live prices, technical indicators, and portfolio context. The AI can execute trades, create strategies, and set up automations — all with your confirmation.
 
-AI responses now appear **token-by-token** as they're generated instead of blocking behind a spinner. The terminal feels alive — you see the AI thinking in real time. Tool-use rounds (price lookups, portfolio checks, trade execution) still work seamlessly: the stream pauses during tool execution and resumes when results are ready.
+### Market Analysis (`/analyze`)
+Full technical analysis with **RSI**, **MACD**, **Bollinger Bands**, **SMA 20/50**, trend detection, and the **Fear & Greed Index**. The AI uses these indicators automatically when you ask for trading advice.
 
-### Markdown Rendering
+### Portfolio Analytics (`/analytics`)
+Advanced metrics: **Sharpe ratio**, **max drawdown**, **win rate**, **profit factor**, allocation charts, and trade statistics. Ask the AI "how am I performing?" for a natural language summary.
 
-AI responses are rendered with full markdown formatting — **bold**, `inline code`, code blocks, lists, tables, and headings all display correctly in the terminal. Powered by [Glamour](https://github.com/charmbracelet/glamour).
+### Automation (`/auto`)
+Tell the AI "buy $100 of BTC every day" and it creates a recurring rule. Supports schedule-based (hourly, daily, weekly), price-condition, and portfolio-metric triggers. Every fire requires your confirmation.
 
-### One-Command Setup (`/config init`)
+### TWAP Strategies (`/strategy`)
+Split large orders into time-weighted slices. `/strategy twap ETH buy $2000 4h` creates 8 slices over 4 hours — each with confirmation and risk checks.
 
-New users no longer need to visit a website, create an account, and copy-paste an API key. Just run `/config init` and NickAI provisions an anonymous PaperNick account automatically, stores the key, and you're trading in seconds.
+### Risk Guardrails (`/risk`)
+Set max order size, position limits, and daily loss caps. Risk checks apply to **every** trade — manual, AI, trigger, strategy, and automation.
+
+### Notifications (`/notify`)
+Get **desktop notifications** (macOS/Linux) and **webhook alerts** when prices hit targets, trades execute, or automations fire. Never miss an event.
+
+### Conditional Triggers (`/trigger`)
+"If BTC drops below $60K, sell 0.5 BTC" — triggers persist across restarts and check every 30 seconds.
+
+### Price Alerts (`/alert`)
+Background alerts that fire when a symbol crosses your target price, with terminal bell and optional desktop notification.
+
+### Trade Journal (`/history`)
+Every trade is logged with source (manual, AI, trigger, strategy, automation), rationale, and timestamps.
+
+### MCP Integrations (`/mcp`)
+Connect external tools via Model Context Protocol — DeFi data, exchange APIs, on-chain analytics. Install with `/mcp add <name>`.
+
+### Streaming AI + Markdown
+Responses stream token-by-token with full markdown rendering — bold, code blocks, tables, lists. Powered by [Glamour](https://github.com/charmbracelet/glamour).
+
+### One-Command Setup
+`/config init` provisions a PaperNick account instantly — no signup required.
 
 ## Install
 
@@ -106,35 +133,55 @@ Anthropic models stream responses token-by-token with tool use. MiniMax returns 
 
 ## Commands
 
+### Trading
 | Command | Description |
 |---|---|
-| `/help` | Show all commands |
-| `/config init` | Auto-provision API key |
-| `/status` | Portfolio, positions & cash |
-| `/orders` | Recent orders & trades |
-| `/price BTC ETH` | Live price quotes |
-| `/watch BTC ETH SOL` | Live price dashboard |
-| `/snapshot` | Combined portfolio dashboard |
-| `/market` | Full market overview (10 assets) |
-| `/pnl` | Profit & loss summary |
-| `/history` | Trade journal with all orders |
 | `/buy BTC 0.1` | Market buy |
 | `/sell ETH 1.0 limit 4200` | Limit sell |
-| `/agents` | List trading agents |
-| `/templates` | Browse marketplace |
-| `/workflow list` | Manage automation workflows |
-| `/credential list` | Manage exchange API keys |
-| `/logs <workflow>` | Workflow execution logs |
-| `/man <command>` | Detailed manual page |
+| `/price BTC ETH` | Live price quotes |
+| `/watch BTC ETH SOL` | Live price dashboard |
 | `/chart BTC` | ASCII sparkline chart |
-| `/alert BTC > 100000` | Set a price alert |
+| `/analyze BTC` | Technical analysis (RSI, MACD, Bollinger) |
+| `/alert BTC > 100000` | Background price alert |
+| `/trigger add BTC < 60000 sell 0.5` | Conditional trade |
+
+### Portfolio
+| Command | Description |
+|---|---|
+| `/status` | Positions & cash balance |
+| `/orders` | Recent orders & trades |
+| `/pnl` | Profit & loss summary |
+| `/analytics` | Sharpe ratio, drawdown, allocation |
+| `/history` | Trade journal |
+| `/snapshot` | Combined dashboard |
+| `/market` | Full market overview (10 assets) |
+
+### Automation & Strategy
+| Command | Description |
+|---|---|
+| `/auto list` | View automation rules |
+| `/auto pause <id>` | Pause a rule |
+| `/strategy twap ETH buy $2000 4h` | TWAP execution strategy |
+| `/strategy list` | View active strategies |
+| `/risk set max-order 5000` | Set risk guardrails |
+| `/risk show` | View risk limits |
+| `/notify set desktop on` | Enable desktop notifications |
+| `/notify set webhook <url>` | Enable webhook alerts |
+
+### Setup & Tools
+| Command | Description |
+|---|---|
+| `/config init` | Auto-provision API key |
+| `/config` | Manage settings & keys |
 | `/model` | Switch AI model |
 | `/theme` | Switch color theme |
-| `/config` | Manage API keys & connection |
-| `/clear` | Clear chat |
-| `/quit` | Exit |
+| `/mcp list` | Connected MCP servers |
+| `/mcp add <name>` | Install MCP server |
+| `/credential list` | Exchange API keys |
+| `/workflow list` | Automation workflows |
+| `/man <command>` | Detailed manual page |
 
-Or just type naturally — the AI agent can check prices, analyze markets, and place trades for you. Responses stream in real time with full markdown formatting.
+Or just type naturally — the AI can check prices, run technical analysis, execute trades, create automations, and manage your portfolio.
 
 ## Vim Mode
 
