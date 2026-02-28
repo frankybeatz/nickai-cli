@@ -183,6 +183,33 @@ Anthropic models stream responses token-by-token with tool use. MiniMax returns 
 
 Or just type naturally — the AI can check prices, run technical analysis, execute trades, create automations, and manage your portfolio.
 
+## MCP Integrations
+
+NickAI supports the [Model Context Protocol](https://modelcontextprotocol.io) — plug in external tools and the AI can use them automatically.
+
+```
+/mcp search          # browse the curated server directory
+/mcp add ccxt        # install a server
+/mcp list            # see connected servers & tools
+/mcp quick           # install all free servers at once
+```
+
+### Available Servers
+
+| Server | What it does | Auth |
+|---|---|---|
+| `ccxt` | Trade on 100+ crypto exchanges | API keys |
+| `alpaca` | Stocks, ETFs, options, crypto | API keys |
+| `defillama` | DeFi TVL, yields, volumes | Free |
+| `tradingview` | Technical analysis, screeners | Free |
+| `onchain` | ERC20 tokens, transactions | Free |
+| `web3` | Multi-chain (ETH, SOL, BTC) | Free |
+| `solana` | 40+ Solana actions — tokens, DeFi, NFTs | RPC URL |
+| `jupiter` | Solana DEX trades via Jupiter | Private key |
+| `lifi` | Cross-chain bridge and swap | Free |
+
+Servers run as subprocesses communicating over stdio. Config stored at `~/.nickai/mcp.json`.
+
 ## Vim Mode
 
 The terminal supports modal editing. Press `Esc` to enter NORMAL mode.
