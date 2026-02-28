@@ -18,16 +18,34 @@ type ToolEntry struct {
 	Source      string // "builtin" or MCP server name
 }
 
+// ConfirmRequest is sent by a tool executor to ask the user for confirmation.
+type ConfirmRequest struct {
+	ToolName string
+	Input    json.RawMessage
+	Display  string // pre-rendered confirmation text
+}
+
+// ConfirmResponse carries the user's answer back to the blocked tool executor.
+type ConfirmResponse struct {
+	Approved bool
+}
+
 // Registry holds all available tools, both built-in and MCP-discovered.
 type Registry struct {
 	entries map[string]*ToolEntry
 	order   []string // preserves insertion order for listing
+
+	// Confirmation channels for tools that need user approval (e.g. place_order).
+	ConfirmCh  chan ConfirmRequest  // tool executor → UI
+	ResponseCh chan ConfirmResponse // UI → tool executor
 }
 
 // NewRegistry creates an empty tool registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		entries: make(map[string]*ToolEntry),
+		entries:    make(map[string]*ToolEntry),
+		ConfirmCh:  make(chan ConfirmRequest, 1),
+		ResponseCh: make(chan ConfirmResponse, 1),
 	}
 }
 

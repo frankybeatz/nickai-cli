@@ -3,6 +3,7 @@ package ai
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -211,6 +212,7 @@ func NewAgent(client *api.PapernickClient, anthropicKey string, registry *tools.
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
+				TLSClientConfig:  &tls.Config{MaxVersion: tls.VersionTLS12},
 			},
 		},
 	}
@@ -576,6 +578,7 @@ func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error)
 		Timeout: 120 * time.Second,
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
+			TLSClientConfig:  &tls.Config{MaxVersion: tls.VersionTLS12},
 		},
 	}
 

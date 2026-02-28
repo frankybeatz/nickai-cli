@@ -15,12 +15,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nickai/cli/internal/ai"
+	"github.com/nickai/cli/internal/alert"
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/commands"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/tools"
+	"github.com/nickai/cli/internal/trigger"
 	"github.com/nickai/cli/internal/workflow"
 )
 
@@ -41,7 +43,7 @@ var knownCommands = []string{
 	"/buy", "/sell", "/price", "/watch", "/snapshot",
 	"/market", "/pnl", "/history", "/credential", "/workflow",
 	"/logs", "/man", "/config", "/clear", "/quit",
-	"/alert", "/chart", "/theme", "/model", "/mcp",
+	"/alert", "/chart", "/theme", "/model", "/mcp", "/trigger",
 }
 
 var knownSymbols = []string{
@@ -51,6 +53,7 @@ var knownSymbols = []string{
 var symbolCommands = map[string]bool{
 	"/price": true, "/buy": true, "/sell": true,
 	"/watch": true, "/chart": true, "/alert": true,
+	"/trigger": true,
 }
 
 // editorFinishedMsg is sent when an external editor process completes.
@@ -84,13 +87,6 @@ type apiResponseMsg struct {
 	content string
 }
 
-// priceAlert represents a background price alert.
-type priceAlert struct {
-	symbol   string
-	operator string // ">" or "<"
-	target   float64
-}
-
 // alertCheckMsg triggers a periodic alert check.
 type alertCheckMsg struct{}
 
@@ -100,6 +96,17 @@ type alertTriggeredMsg struct {
 	currentPrice float64
 	operator     string
 	target       float64
+}
+
+// aiTradeConfirmMsg is sent when the AI agent's place_order tool needs user confirmation.
+type aiTradeConfirmMsg struct {
+	req tools.ConfirmRequest
+}
+
+// triggerFiredMsg is sent when a conditional trigger's price condition is met.
+type triggerFiredMsg struct {
+	trigger trigger.Trigger
+	price   float64
 }
 
 // tickerFetchMsg signals time to fetch new ticker data.
@@ -174,16 +181,21 @@ type Model struct {
 	historyIndex int // -1 means not browsing history
 	historySaved string // saves current input when browsing
 
-	// Alert state.
-	alerts       []priceAlert
+	// Alert state (persistent — saved to ~/.nickai/alerts.json).
+	alerts       []alert.Alert
 	alertTicking bool
+
+	// Trigger state (persistent — saved to ~/.nickai/triggers.json).
+	triggers       []trigger.Trigger
+	pendingTrigger *trigger.Trigger // trigger awaiting confirmation
 
 	// Ticker bar state.
 	tickerPrices  []api.Price
 	tickerTicking bool
 
 	// Trade confirmation state.
-	pendingTrade *api.PlaceOrderRequest
+	pendingTrade   *api.PlaceOrderRequest // manual /buy /sell
+	pendingAITrade *tools.ConfirmRequest  // AI-initiated place_order
 
 	// Overlay dialog state.
 	dialog DialogState
@@ -251,6 +263,10 @@ func New() Model {
 	// Load input history from disk.
 	inputHistory := loadInputHistory()
 
+	// Load persistent alerts and triggers from disk.
+	savedAlerts, _ := alert.Load()
+	savedTriggers, _ := trigger.Active()
+
 	return Model{
 		textInput:     ti,
 		vimMode:       ModeInsert,
@@ -260,6 +276,8 @@ func New() Model {
 		bootStartTime: time.Now(),
 		historyIndex:  -1,
 		inputHistory:  inputHistory,
+		alerts:       savedAlerts,
+		triggers:     savedTriggers,
 		cfg:          cfg,
 		client:       client,
 		agent:        agent,
@@ -279,9 +297,16 @@ func (m Model) cleanup() {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textinput.Blink, tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
-		return bootTickMsg{}
-	}))
+	cmds := []tea.Cmd{
+		textinput.Blink,
+		tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg { return bootTickMsg{} }),
+	}
+	// Resume alert/trigger polling if we have persistent entries from a previous session.
+	if len(m.alerts) > 0 || len(m.triggers) > 0 {
+		m.alertTicking = true
+		cmds = append(cmds, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return alertCheckMsg{} }))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -394,6 +419,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case aiTradeConfirmMsg:
+		// The AI agent wants to place an order — show confirmation prompt.
+		m.pendingAITrade = &msg.req
+		m.vimMode = ModeConfirm
+		m.textInput.Blur()
+		// Show the trade confirmation card in chat.
+		confirmCard := WarningStyle.Render("  AI TRADE REQUEST ") + "\n" +
+			"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(msg.req.Display) + "\n" +
+			DimStyle.Render("  Press y to confirm, n to cancel")
+		m.addBotMessage(confirmCard)
+		m.updateViewport()
+		return m, nil
+
 	case apiResponseMsg:
 		m.loading = false
 		// Replace the last loading message with the actual result.
@@ -404,21 +442,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case alertCheckMsg:
-		if len(m.alerts) == 0 {
+		if len(m.alerts) == 0 && len(m.triggers) == 0 {
 			m.alertTicking = false
 			return m, nil
 		}
 		symbolSet := make(map[string]bool)
 		for _, a := range m.alerts {
-			symbolSet[a.symbol] = true
+			symbolSet[a.Symbol] = true
+		}
+		for _, t := range m.triggers {
+			symbolSet[t.Symbol] = true
 		}
 		symbols := make([]string, 0, len(symbolSet))
 		for s := range symbolSet {
 			symbols = append(symbols, s)
 		}
 		client := m.client
-		alerts := make([]priceAlert, len(m.alerts))
+		alerts := make([]alert.Alert, len(m.alerts))
 		copy(alerts, m.alerts)
+		triggers := make([]trigger.Trigger, len(m.triggers))
+		copy(triggers, m.triggers)
 		return m, tea.Batch(
 			func() tea.Msg {
 				prices, err := client.GetPrices(symbols)
@@ -429,18 +472,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for _, p := range prices {
 					priceMap[p.Symbol] = p.Price
 				}
+				// Check alerts.
 				for _, a := range alerts {
-					normalized := api.NormalizeSymbol(a.symbol)
+					normalized := api.NormalizeSymbol(a.Symbol)
 					price, ok := priceMap[normalized]
 					if !ok {
 						continue
 					}
-					if (a.operator == ">" && price > a.target) ||
-						(a.operator == "<" && price < a.target) {
+					if (a.Operator == ">" && price > a.Target) ||
+						(a.Operator == "<" && price < a.Target) {
 						return alertTriggeredMsg{
-							symbol: a.symbol, currentPrice: price,
-							operator: a.operator, target: a.target,
+							symbol: a.Symbol, currentPrice: price,
+							operator: a.Operator, target: a.Target,
 						}
+					}
+				}
+				// Check triggers.
+				for _, t := range triggers {
+					normalized := api.NormalizeSymbol(t.Symbol)
+					price, ok := priceMap[normalized]
+					if !ok {
+						continue
+					}
+					if (t.Operator == ">" && price > t.Target) ||
+						(t.Operator == "<" && price < t.Target) {
+						return triggerFiredMsg{trigger: t, price: price}
 					}
 				}
 				return nil
@@ -449,18 +505,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case alertTriggeredMsg:
-		// Remove the triggered alert.
+		// Remove the triggered alert from memory and disk.
 		for i, a := range m.alerts {
-			if a.symbol == msg.symbol && a.operator == msg.operator && a.target == msg.target {
+			if a.Symbol == msg.symbol && a.Operator == msg.operator && a.Target == msg.target {
 				m.alerts = append(m.alerts[:i], m.alerts[i+1:]...)
 				break
 			}
 		}
+		_ = alert.Remove(msg.symbol, msg.operator, msg.target)
 		alertContent := "\a" + WarningStyle.Render("  ALERT ") +
 			BrandStyle.Render(msg.symbol) + " is now " +
 			lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(formatPrice(msg.currentPrice)) +
 			DimStyle.Render(fmt.Sprintf("  (target: %s %s)", msg.operator, formatPrice(msg.target)))
 		m.addBotMessage(alertContent)
+		m.updateViewport()
+		return m, nil
+
+	case triggerFiredMsg:
+		// Show trigger confirmation — user must approve before trade executes.
+		m.pendingTrigger = &msg.trigger
+		m.vimMode = ModeConfirm
+		m.textInput.Blur()
+		confirmCard := "\a" + RenderTriggerConfirm(msg.trigger, msg.price)
+		m.addBotMessage(confirmCard)
 		m.updateViewport()
 		return m, nil
 
@@ -688,6 +755,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.streamCh = tokenCh
 			agent := m.agent
 			userInput := result.Input
+			confirmCh := m.toolRegistry.ConfirmCh
 			return m, tea.Batch(
 				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 				func() tea.Msg {
@@ -696,6 +764,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return aiStreamDoneMsg{finalContent: resp, err: err}
 				},
 				waitForStreamToken(tokenCh),
+				waitForConfirmation(confirmCh),
 			)
 
 		case commands.TypeBuy, commands.TypeSell:
@@ -718,8 +787,22 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.addBotMessage(output)
 			}
 			m.updateViewport()
-			// Start alert ticker if we just added the first alert.
-			if !m.alertTicking && len(m.alerts) > 0 {
+			// Start alert/trigger ticker if we just added the first alert.
+			if !m.alertTicking && (len(m.alerts) > 0 || len(m.triggers) > 0) {
+				m.alertTicking = true
+				return m, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return alertCheckMsg{} })
+			}
+			return m, nil
+
+		case commands.TypeTrigger:
+			// Trigger management (synchronous).
+			output := m.handleTrigger(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			// Start polling if we just added the first trigger.
+			if !m.alertTicking && (len(m.alerts) > 0 || len(m.triggers) > 0) {
 				m.alertTicking = true
 				return m, tea.Tick(30*time.Second, func(t time.Time) tea.Msg { return alertCheckMsg{} })
 			}
@@ -1087,6 +1170,63 @@ func (m *Model) executeSearch() {
 func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
+		// AI-initiated trade confirmation.
+		if m.pendingAITrade != nil {
+			confirmCh := m.toolRegistry.ConfirmCh
+			m.toolRegistry.ResponseCh <- tools.ConfirmResponse{Approved: true}
+			m.pendingAITrade = nil
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + lipgloss.NewStyle().Foreground(ColorPrimary).Render("Trade approved — executing..."))
+			m.updateViewport()
+			// Re-listen for more confirmations (agent may place multiple trades).
+			return m, tea.Batch(textinput.Blink, waitForConfirmation(confirmCh))
+		}
+		// Trigger-fired trade confirmation.
+		if m.pendingTrigger != nil {
+			t := *m.pendingTrigger
+			m.pendingTrigger = nil
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			// Mark trigger as fired.
+			_ = trigger.MarkFired(t.ID)
+			for i := range m.triggers {
+				if m.triggers[i].ID == t.ID {
+					m.triggers = append(m.triggers[:i], m.triggers[i+1:]...)
+					break
+				}
+			}
+			// Execute the trade.
+			symbol := strings.ToUpper(t.Symbol)
+			if !strings.HasSuffix(symbol, "USDT") && !strings.HasSuffix(symbol, "USDC") && !strings.HasSuffix(symbol, "USD") {
+				symbol += "USDT"
+			}
+			req := api.PlaceOrderRequest{
+				Symbol:   symbol,
+				Side:     t.Action.Side,
+				Quantity: t.Action.Quantity,
+				Type:     t.Action.Type,
+				Price:    t.Action.Price,
+			}
+			m.loading = true
+			m.loadingFrame = 0
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " Executing triggered trade...")
+			m.updateViewport()
+			client := m.client
+			width := m.width
+			return m, tea.Batch(
+				textinput.Blink,
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					order, err := client.PlaceOrder(req)
+					if err != nil {
+						return apiResponseMsg{content: RenderOrderError(req.Side, req.Symbol, err)}
+					}
+					return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+				},
+			)
+		}
+		// Manual /buy /sell confirmation.
 		if m.pendingTrade == nil {
 			m.vimMode = ModeInsert
 			m.textInput.Focus()
@@ -1117,6 +1257,35 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		)
 
 	case "n", "N", "q":
+		// AI-initiated trade cancellation.
+		if m.pendingAITrade != nil {
+			confirmCh := m.toolRegistry.ConfirmCh
+			m.toolRegistry.ResponseCh <- tools.ConfirmResponse{Approved: false}
+			m.pendingAITrade = nil
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			m.addBotMessage(DimStyle.Render("  AI trade declined."))
+			m.updateViewport()
+			return m, tea.Batch(textinput.Blink, waitForConfirmation(confirmCh))
+		}
+		// Trigger trade cancellation.
+		if m.pendingTrigger != nil {
+			t := *m.pendingTrigger
+			m.pendingTrigger = nil
+			_ = trigger.MarkFired(t.ID)
+			for i := range m.triggers {
+				if m.triggers[i].ID == t.ID {
+					m.triggers = append(m.triggers[:i], m.triggers[i+1:]...)
+					break
+				}
+			}
+			m.vimMode = ModeInsert
+			m.textInput.Focus()
+			m.addBotMessage(DimStyle.Render("  Trigger skipped. It won't fire again."))
+			m.updateViewport()
+			return m, textinput.Blink
+		}
+		// Manual trade cancellation.
 		m.pendingTrade = nil
 		m.vimMode = ModeInsert
 		m.textInput.Focus()
@@ -1389,13 +1558,14 @@ func (m *Model) handleAlert(args []string) string {
 		lines = append(lines, SecondaryStyle.Render("  Active Alerts\n"))
 		for _, a := range m.alerts {
 			lines = append(lines, "  "+StatusIndicator("running")+
-				BrandStyle.Render(a.symbol)+" "+a.operator+" "+formatPrice(a.target))
+				BrandStyle.Render(a.Symbol)+" "+a.Operator+" "+formatPrice(a.Target))
 		}
 		return strings.Join(lines, "\n")
 
 	case "clear":
 		count := len(m.alerts)
 		m.alerts = nil
+		_ = alert.Clear()
 		return BotMsgStyle.Render("nick: ") +
 			fmt.Sprintf("Cleared %d alert(s).", count)
 	}
@@ -1416,13 +1586,118 @@ func (m *Model) handleAlert(args []string) string {
 		return ErrorStyle.Render("  Invalid target price: ") + args[2]
 	}
 
-	m.alerts = append(m.alerts, priceAlert{
-		symbol: symbol, operator: op, target: target,
-	})
+	a := alert.Alert{
+		Symbol:   symbol,
+		Operator: op,
+		Target:   target,
+		Created:  time.Now(),
+	}
+	m.alerts = append(m.alerts, a)
+	_ = alert.Add(a)
 
 	return BotMsgStyle.Render("nick: ") + "Alert set: " +
 		BrandStyle.Render(symbol) + " " + op + " " + formatPrice(target) +
-		DimStyle.Render("  (checking every 30s)")
+		DimStyle.Render("  (checking every 30s, persists across restarts)")
+}
+
+// --- Trigger handling ---
+
+func (m *Model) handleTrigger(args []string) string {
+	if len(args) == 0 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/trigger add BTC < 60000 sell 0.5") + "\n" +
+			DimStyle.Render("  Subcommands: /trigger list, /trigger add, /trigger remove <id>, /trigger clear")
+	}
+
+	sub := strings.ToLower(args[0])
+
+	switch sub {
+	case "list":
+		if len(m.triggers) == 0 {
+			return DimStyle.Render("  No active triggers. Create one with ") +
+				CommandStyle.Render("/trigger add BTC < 60000 sell 0.5")
+		}
+		return RenderTriggerList(m.triggers)
+
+	case "clear":
+		count := len(m.triggers)
+		m.triggers = nil
+		_ = trigger.Clear()
+		return BotMsgStyle.Render("nick: ") +
+			fmt.Sprintf("Cleared %d trigger(s).", count)
+
+	case "remove", "rm", "delete":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/trigger remove <id>")
+		}
+		idPrefix := args[1]
+		found := false
+		for i, t := range m.triggers {
+			if len(t.ID) >= len(idPrefix) && t.ID[:len(idPrefix)] == idPrefix {
+				m.triggers = append(m.triggers[:i], m.triggers[i+1:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ErrorStyle.Render("  No trigger found with ID prefix: ") + idPrefix
+		}
+		_ = trigger.Remove(idPrefix)
+		return BotMsgStyle.Render("nick: ") + "Trigger removed."
+
+	case "add":
+		// /trigger add BTC < 60000 sell 0.5 [market]
+		if len(args) < 6 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/trigger add BTC < 60000 sell 0.5") + "\n" +
+				DimStyle.Render("  Format: /trigger add <symbol> <> or <> <price> <buy|sell> <qty> [market|limit]")
+		}
+		symbol := strings.ToUpper(args[1])
+		op := args[2]
+		if op != ">" && op != "<" {
+			return ErrorStyle.Render("  Operator must be ") +
+				CommandStyle.Render(">") + " or " + CommandStyle.Render("<")
+		}
+		target, err := strconv.ParseFloat(args[3], 64)
+		if err != nil || target <= 0 {
+			return ErrorStyle.Render("  Invalid target price: ") + args[3]
+		}
+		side := strings.ToLower(args[4])
+		if side != "buy" && side != "sell" {
+			return ErrorStyle.Render("  Side must be ") +
+				CommandStyle.Render("buy") + " or " + CommandStyle.Render("sell")
+		}
+		qty, err := strconv.ParseFloat(args[5], 64)
+		if err != nil || qty <= 0 {
+			return ErrorStyle.Render("  Invalid quantity: ") + args[5]
+		}
+		orderType := "market"
+		if len(args) > 6 {
+			orderType = strings.ToLower(args[6])
+		}
+
+		t := trigger.Trigger{
+			ID:        randomID(8),
+			Symbol:    symbol,
+			Operator:  op,
+			Target:    target,
+			Action:    trigger.Action{Side: side, Quantity: qty, Type: orderType},
+			CreatedAt: time.Now(),
+		}
+		m.triggers = append(m.triggers, t)
+		_ = trigger.Add(t)
+
+		return BotMsgStyle.Render("nick: ") + "Trigger set: " +
+			DimStyle.Render("if ") + BrandStyle.Render(symbol) + " " + op + " " + formatPrice(target) +
+			DimStyle.Render(" → ") +
+			lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(
+				strings.ToUpper(side)+" "+strconv.FormatFloat(qty, 'f', -1, 64)+" "+symbol) +
+			DimStyle.Render("  (ID: "+t.ID+")")
+	}
+
+	return ErrorStyle.Render("  Unknown subcommand: ") + sub + "\n" +
+		DimStyle.Render("  Try: list, add, remove, clear")
 }
 
 // --- Helper: slash suggestion selection ---
@@ -1474,6 +1749,19 @@ func waitForStreamToken(ch <-chan string) tea.Cmd {
 			return nil
 		}
 		return aiStreamMsg{token: token}
+	}
+}
+
+// waitForConfirmation listens for AI trade confirmation requests.
+// Runs concurrently with the streaming agent — when the agent's place_order
+// blocks on ConfirmCh, this returns an aiTradeConfirmMsg to the Bubbletea loop.
+func waitForConfirmation(ch <-chan tools.ConfirmRequest) tea.Cmd {
+	return func() tea.Msg {
+		req, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return aiTradeConfirmMsg{req: req}
 	}
 }
 
@@ -1589,6 +1877,9 @@ func (m *Model) renderResult(r commands.Result) string {
 
 	case commands.TypeAlert:
 		return m.handleAlert(r.Args)
+
+	case commands.TypeTrigger:
+		return m.handleTrigger(r.Args)
 
 	case commands.TypeTheme:
 		return m.handleTheme(r.Args)
@@ -2547,9 +2838,16 @@ func (m Model) statusIndicators() string {
 	}
 
 	alertPart := ""
-	if len(m.alerts) > 0 {
+	if len(m.alerts) > 0 || len(m.triggers) > 0 {
+		parts := []string{}
+		if len(m.alerts) > 0 {
+			parts = append(parts, fmt.Sprintf("⚡%d", len(m.alerts)))
+		}
+		if len(m.triggers) > 0 {
+			parts = append(parts, fmt.Sprintf("⏱%d", len(m.triggers)))
+		}
 		alertPart = DimStyle.Render(" ┃ ") +
-			lipgloss.NewStyle().Foreground(ColorWarning).Render(fmt.Sprintf("⚡%d", len(m.alerts)))
+			lipgloss.NewStyle().Foreground(ColorWarning).Render(strings.Join(parts, " "))
 	}
 
 	return connDot + modelName + alertPart

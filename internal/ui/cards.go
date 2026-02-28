@@ -13,6 +13,7 @@ import (
 	"github.com/nickai/cli/internal/credential"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/mock"
+	"github.com/nickai/cli/internal/trigger"
 	"github.com/nickai/cli/internal/workflow"
 )
 
@@ -1295,6 +1296,7 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/agents", "List your trading agents"))
 	lines = append(lines, cmdLine("/templates", "Browse marketplace templates"))
 	lines = append(lines, cmdLine("/workflow", "Manage automation workflows"))
+	lines = append(lines, cmdLine("/trigger add BTC < 60000 sell 0.5", "Conditional trade"))
 	lines = append(lines, cmdLine("/logs <workflow>", "Workflow execution logs"))
 
 	lines = append(lines, sectionHeader("Setup & Integrations"))
@@ -1365,4 +1367,31 @@ func padRight(s string, n int) string {
 		return s
 	}
 	return s + strings.Repeat(" ", n-len(s))
+}
+
+// --- Trigger rendering ---
+
+// RenderTriggerList shows all active triggers in a formatted list.
+func RenderTriggerList(triggers []trigger.Trigger) string {
+	var lines []string
+	lines = append(lines, SecondaryStyle.Render("  Active Triggers\n"))
+	for _, t := range triggers {
+		condition := BrandStyle.Render(t.Symbol) + " " + t.Operator + " " + formatPrice(t.Target)
+		action := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(
+			strings.ToUpper(t.Action.Side) + " " + fmt.Sprintf("%g", t.Action.Quantity) + " " + t.Symbol)
+		id := DimStyle.Render("  [" + t.ID[:6] + "]")
+		lines = append(lines, "  "+StatusIndicator("running")+
+			DimStyle.Render("if ")+condition+DimStyle.Render(" → ")+action+id)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RenderTriggerConfirm renders a confirmation card for a fired trigger.
+func RenderTriggerConfirm(t trigger.Trigger, currentPrice float64) string {
+	return WarningStyle.Render("  TRIGGER FIRED ") + "\n" +
+		"  " + BrandStyle.Render(t.Symbol) + " hit " + formatPrice(currentPrice) +
+		DimStyle.Render(fmt.Sprintf("  (condition: %s %s)", t.Operator, formatPrice(t.Target))) + "\n" +
+		"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(
+			strings.ToUpper(t.Action.Side)+" "+fmt.Sprintf("%g", t.Action.Quantity)+" "+t.Symbol+" ("+t.Action.Type+")") + "\n" +
+		DimStyle.Render("  Press y to execute, n to skip")
 }

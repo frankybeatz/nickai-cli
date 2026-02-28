@@ -409,6 +409,30 @@ Each server runs as a subprocess communicating over stdio.`,
 		},
 		seeAlso: []string{"config", "credential"},
 	},
+	"trigger": {
+		name:     "trigger - conditional trading rules",
+		synopsis: "/trigger <subcommand> [args]",
+		desc: `Create conditional trading rules that fire when price conditions
+are met. Triggers persist across restarts and are checked every
+30 seconds alongside price alerts.
+
+When a trigger fires, you get a confirmation prompt before the
+trade executes — you always stay in control.
+
+Subcommands:
+  list                          Show active triggers
+  add <SYM> < or > <PRICE> <buy|sell> <QTY>  Create a trigger
+  remove <id>                   Remove by ID prefix
+  clear                         Remove all triggers`,
+		examples: []string{
+			"/trigger list",
+			"/trigger add BTC < 60000 sell 0.5",
+			"/trigger add ETH > 4000 buy 2 market",
+			"/trigger remove a1b2c3",
+			"/trigger clear",
+		},
+		seeAlso: []string{"alert", "buy", "sell"},
+	},
 	"watch": {
 		name:     "watch - live price monitor",
 		synopsis: "/watch <SYMBOL> [SYMBOL...]",
@@ -449,6 +473,8 @@ func RenderManPage(command string) string {
 		command = "history"
 	case "models":
 		command = "model"
+	case "trig":
+		command = "trigger"
 	}
 
 	page, ok := manPages[command]
@@ -526,6 +552,7 @@ func RenderManIndex() string {
 		{"history", "Trade journal"},
 		{"chart", "ASCII sparkline chart"},
 		{"alert", "Set price alerts"},
+		{"trigger", "Conditional trading rules"},
 		{"model", "Switch AI model"},
 		{"theme", "Switch color theme"},
 		{"config", "Manage configuration"},

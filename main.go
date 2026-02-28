@@ -58,6 +58,10 @@ func main() {
 
 	ui.Version = version
 
+	// Prevent Bubbletea from querying terminal background color (OSC 11).
+	// Some terminals leak the response as keyboard input ("rgb:...").
+	os.Setenv("TERM_PROGRAM", "nickai")
+
 	p := tea.NewProgram(
 		ui.New(),
 		tea.WithAltScreen(),
