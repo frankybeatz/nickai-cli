@@ -61,8 +61,7 @@ func RenderAgentListMock(width int) string {
 	agents := mock.Agents()
 	cardWidth := min(width-4, 64)
 
-	title := SecondaryStyle.Render("  Your Agents") +
-		DimStyle.Render(fmt.Sprintf("  (%d total)", len(agents)))
+	title := SectionHeaderWithCount("Your Agents", len(agents))
 
 	var cards []string
 	cards = append(cards, title)
@@ -112,14 +111,13 @@ func RenderOrderList(client *api.PapernickClient, width int) string {
 	}
 
 	cardWidth := min(width-4, 64)
-	title := SecondaryStyle.Render("  Recent Orders") +
-		DimStyle.Render(fmt.Sprintf("  (%d total)", len(orders)))
+	title := SectionHeaderWithCount("Recent Orders", len(orders))
 
 	var cards []string
 	cards = append(cards, title)
 
 	if len(orders) == 0 {
-		cards = append(cards, DimStyle.Render("  No orders yet. Place your first trade!"))
+		cards = append(cards, EmptyState("No orders yet. Place your first trade!"))
 	} else {
 		limit := min(len(orders), 10)
 		for _, o := range orders[:limit] {
@@ -129,13 +127,13 @@ func RenderOrderList(client *api.PapernickClient, width int) string {
 			cards = append(cards, DimStyle.Render(fmt.Sprintf("  ... and %d more", len(orders)-10)))
 		}
 	}
-	return strings.Join(cards, "\n")
+	return strings.Join(cards, "\n") + NextSteps("/pnl", "/history")
 }
 
 // --- /status: mock fallback or live portfolio ---
 
 func RenderStatusMock(mcpMgr *mcp.ClientManager) string {
-	header := SecondaryStyle.Render("  Platform Status\n")
+	header := SectionHeader("Platform Status")
 	lines := []string{
 		header,
 		"  " + StatusIndicator("running") + "API Gateway        " + BrandStyle.Render("operational"),
@@ -159,7 +157,7 @@ func RenderStatusLive(client *api.PapernickClient, mcpMgr *mcp.ClientManager, wi
 	}
 
 	cardWidth := min(width-4, 64)
-	header := SecondaryStyle.Render("  Portfolio Status\n")
+	header := SectionHeader("Portfolio Status")
 	var lines []string
 	lines = append(lines, header)
 
@@ -247,14 +245,15 @@ func RenderPrices(client *api.PapernickClient, symbols []string, width int) stri
 	}
 
 	cardWidth := min(width-4, 64)
-	title := SecondaryStyle.Render("  Live Quotes\n")
+	title := SectionHeader("Live Quotes")
 	var cards []string
 	cards = append(cards, title)
 
 	for _, p := range prices {
 		cards = append(cards, renderPriceCard(p, cardWidth))
 	}
-	return strings.Join(cards, "\n")
+	sym := strings.TrimSuffix(symbols[0], "USDT")
+	return strings.Join(cards, "\n") + NextSteps("/chart "+sym, "/buy "+sym)
 }
 
 func renderPriceCard(p api.Price, width int) string {
@@ -315,7 +314,7 @@ func RenderWatch(client *api.PapernickClient, symbols []string, width int) strin
 // --- /config ---
 
 func RenderConfigShow(cfg *config.Config) string {
-	header := SecondaryStyle.Render("  Configuration\n")
+	header := SectionHeader("Configuration")
 
 	anthropicStatus := cfg.MaskedAnthropicKey()
 	if cfg.AnthropicKey == "" {
@@ -365,7 +364,7 @@ func RenderConfigTest(client *api.PapernickClient) string {
 }
 
 func RenderConfigHelp() string {
-	header := SecondaryStyle.Render("  /config usage\n")
+	header := SectionHeader("/config usage")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/config init") + DimStyle.Render("                    — auto-provision API key"),
@@ -412,7 +411,7 @@ func RenderConfigInit(apiKey, userName string) string {
 
 // RenderMCPHelp shows available /mcp subcommands.
 func RenderMCPHelp() string {
-	header := SecondaryStyle.Render("  /mcp — manage trading integrations\n")
+	header := SectionHeader("/mcp — manage trading integrations")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/mcp list") + DimStyle.Render("                — show connected servers & tools"),
@@ -430,7 +429,7 @@ func RenderMCPHelp() string {
 
 // RenderMCPSearchResults shows matching servers from the curated registry.
 func RenderMCPSearchResults(results []mcp.RegistryEntry) string {
-	lines := []string{SecondaryStyle.Render("  MCP Server Registry\n")}
+	lines := []string{SectionHeader("MCP Server Registry")}
 	for _, e := range results {
 		tier := DimStyle.Render("[community]")
 		if e.Tier == mcp.TierVerified {
@@ -455,7 +454,7 @@ func RenderMCPInfo(e *mcp.RegistryEntry) string {
 		tier = lipgloss.NewStyle().Foreground(ColorPrimary).Render("verified")
 	}
 	lines := []string{
-		SecondaryStyle.Render("  " + e.DisplayName + "\n"),
+		SectionHeader(e.DisplayName),
 		"  " + DimStyle.Render(e.Description),
 		"",
 		"  " + DimStyle.Render("Name:    ") + e.Name,
@@ -479,10 +478,10 @@ func RenderMCPInfo(e *mcp.RegistryEntry) string {
 // --- /credential ---
 
 func RenderCredentialList(store *credential.Store) string {
-	header := SecondaryStyle.Render("  Saved Credentials\n")
+	header := SectionHeader("Saved Credentials")
 
 	if len(store.Credentials) == 0 {
-		return header + "\n" + DimStyle.Render("  No credentials saved.") +
+		return header + "\n" + EmptyState("No credentials saved.") +
 			"\n" + DimStyle.Render("  Add one with ") +
 			CommandStyle.Render("/credential add <name> <exchange> <key> <secret>")
 	}
@@ -516,10 +515,10 @@ func RenderCredentialRemoved(name string) string {
 // --- /workflow ---
 
 func RenderWorkflowList(store *workflow.Store) string {
-	header := SecondaryStyle.Render("  Workflows\n")
+	header := SectionHeader("Workflows")
 
 	if len(store.Workflows) == 0 {
-		return header + "\n" + DimStyle.Render("  No workflows yet.") +
+		return header + "\n" + EmptyState("No workflows yet.") +
 			"\n" + DimStyle.Render("  Create one with ") +
 			CommandStyle.Render("/workflow create <path.json>")
 	}
@@ -645,7 +644,7 @@ func renderWorkflowStatus(s string) string {
 // --- /logs ---
 
 func RenderLogs(w *workflow.Workflow) string {
-	header := SecondaryStyle.Render("  Logs: ") + BrandStyle.Render(w.Name) + "\n"
+	header := SectionHeader("Logs: "+w.Name)
 
 	if len(w.Logs) == 0 {
 		return header + "\n" + DimStyle.Render("  No execution logs. Run the workflow first with ") +
@@ -717,8 +716,7 @@ func RenderTemplateList(width int) string {
 	templates := mock.Templates()
 	cardWidth := min(width-4, 64)
 
-	title := SecondaryStyle.Render("  Template Marketplace") +
-		DimStyle.Render(fmt.Sprintf("  (%d available)", len(templates)))
+	title := SectionHeaderWithCount("Template Marketplace", len(templates))
 
 	var cards []string
 	cards = append(cards, title)
@@ -916,7 +914,7 @@ func RenderMarket(client *api.PapernickClient, width int) string {
 	header := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
 		Render(padRight("Asset", 12) + padRight("Price", 16))
 	rows = append(rows, header)
-	rows = append(rows, DimStyle.Render(strings.Repeat("─", 28)))
+	rows = append(rows, Divider(28))
 
 	for _, p := range prices {
 		sym := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
@@ -1052,7 +1050,8 @@ func RenderPnl(client *api.PapernickClient, width int) string {
 		Width(cardWidth).
 		Render(content)
 
-	return SecondaryStyle.Render("  Profit & Loss") + "\n" + box
+	return SecondaryStyle.Render("  Profit & Loss") + "\n" + box +
+		NextSteps("/analytics", "/risk")
 }
 
 // --- /history: trade journal ---
@@ -1072,7 +1071,7 @@ func RenderHistory(client *api.PapernickClient, width int) string {
 	header := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
 		Render(padRight("#", 5) + padRight("Time", 14) + padRight("Side", 6) + padRight("Asset", 12) + padRight("Amount", 12) + "Status")
 	rows = append(rows, header)
-	rows = append(rows, DimStyle.Render(strings.Repeat("─", 55)))
+	rows = append(rows, Divider(55))
 
 	if len(orders) == 0 {
 		rows = append(rows, DimStyle.Render("  No trades yet. Place your first trade!"))
@@ -1280,7 +1279,7 @@ func RenderTradeConfirmCard(req *api.PlaceOrderRequest, width int) string {
 // --- /help ---
 
 func RenderHelp() string {
-	header := SecondaryStyle.Render("  NickAI Commands\n")
+	header := SectionHeader("NickAI Commands")
 
 	sectionHeader := func(title string) string {
 		return "\n  " + lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(title)
@@ -1353,7 +1352,10 @@ func RenderHelp() string {
 
 	lines = append(lines, sectionHeader("AI & Memory"))
 	lines = append(lines, cmdLine("/memory", "View saved memories"))
+	lines = append(lines, cmdLine("/memory clear", "Clear all memories"))
 	lines = append(lines, cmdLine("/consensus BTC", "Multi-LLM consensus"))
+	lines = append(lines, cmdLine("/analyze presets", "List analysis presets"))
+	lines = append(lines, cmdLine("/analyze run <preset> <sym>", "Run an analysis preset"))
 
 	lines = append(lines, sectionHeader("Setup & Integrations"))
 	lines = append(lines, cmdLine("/config init", "Create account & API key"))
@@ -1430,7 +1432,7 @@ func padRight(s string, n int) string {
 // RenderTriggerList shows all active triggers in a formatted list.
 func RenderTriggerList(triggers []trigger.Trigger) string {
 	var lines []string
-	lines = append(lines, SecondaryStyle.Render("  Active Triggers\n"))
+	lines = append(lines, SectionHeader("Active Triggers"))
 	for _, t := range triggers {
 		condition := BrandStyle.Render(t.Symbol) + " " + t.Operator + " " + formatPrice(t.Target)
 		action := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(
@@ -1457,12 +1459,12 @@ func RenderTriggerConfirm(t trigger.Trigger, currentPrice float64) string {
 // RenderRiskLimits displays current risk limits.
 func RenderRiskLimits(limits *risk.RiskLimits) string {
 	if limits == nil || limits.IsEmpty() {
-		return DimStyle.Render("  No risk limits set.") + "\n" +
+		return EmptyState("No risk limits set.") + "\n" +
 			DimStyle.Render("  Set with ") + CommandStyle.Render("/risk set max-order 5000")
 	}
 
 	var lines []string
-	lines = append(lines, SecondaryStyle.Render("  Risk Guardrails\n"))
+	lines = append(lines, SectionHeader("Risk Guardrails"))
 
 	if limits.MaxOrderValue > 0 {
 		lines = append(lines, "  "+StatusIndicator("running")+
@@ -1484,7 +1486,7 @@ func RenderRiskLimits(limits *risk.RiskLimits) string {
 
 // RenderRiskHelp shows /risk usage.
 func RenderRiskHelp() string {
-	header := SecondaryStyle.Render("  /risk — portfolio risk guardrails\n")
+	header := SectionHeader("/risk — portfolio risk guardrails")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/risk show") + DimStyle.Render("                     — view current limits"),
@@ -1501,12 +1503,12 @@ func RenderRiskHelp() string {
 // RenderStrategyList shows all TWAP strategies.
 func RenderStrategyList(strategies []strategy.TWAPStrategy) string {
 	if len(strategies) == 0 {
-		return DimStyle.Render("  No strategies.") + "\n" +
+		return EmptyState("No strategies.") + "\n" +
 			DimStyle.Render("  Create one with ") + CommandStyle.Render("/strategy twap ETH buy $2000 4h")
 	}
 
 	var lines []string
-	lines = append(lines, SecondaryStyle.Render("  TWAP Strategies\n"))
+	lines = append(lines, SectionHeader("TWAP Strategies"))
 
 	for _, s := range strategies {
 		statusStr := "running"
@@ -1566,7 +1568,7 @@ func RenderStrategySliceConfirm(s strategy.TWAPStrategy, price float64) string {
 
 // RenderStrategyHelp shows /strategy usage.
 func RenderStrategyHelp() string {
-	header := SecondaryStyle.Render("  /strategy — TWAP execution strategies\n")
+	header := SectionHeader("/strategy — TWAP execution strategies")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/strategy twap <SYM> <buy|sell> $<VALUE> <DURATION>") + DimStyle.Render(" — create TWAP"),
@@ -1583,12 +1585,12 @@ func RenderStrategyHelp() string {
 // RenderNotifyConfig displays the current notification configuration.
 func RenderNotifyConfig(cfg *notify.Config) string {
 	if cfg == nil || cfg.IsEmpty() {
-		return DimStyle.Render("  No notification channels configured.") + "\n" +
+		return EmptyState("No notification channels configured.") + "\n" +
 			DimStyle.Render("  Set with ") + CommandStyle.Render("/notify set desktop on")
 	}
 
 	var lines []string
-	lines = append(lines, SecondaryStyle.Render("  Notification Settings\n"))
+	lines = append(lines, SectionHeader("Notification Settings"))
 
 	indicator := func(enabled bool) string {
 		if enabled {
@@ -1621,7 +1623,7 @@ func boolStr(v bool) string {
 
 // RenderNotifyHelp shows /notify usage.
 func RenderNotifyHelp() string {
-	header := SecondaryStyle.Render("  /notify — desktop & webhook notifications\n")
+	header := SectionHeader("/notify — desktop & webhook notifications")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/notify show") + DimStyle.Render("                      — view settings"),
@@ -1853,13 +1855,13 @@ func RenderAnalysis(client *api.PapernickClient, symbol string, width int) strin
 // RenderAutoList shows all automation rules.
 func RenderAutoList(rules []automation.AutoRule) string {
 	if len(rules) == 0 {
-		return DimStyle.Render("  No automation rules.") + "\n" +
+		return EmptyState("No automation rules.") + "\n" +
 			DimStyle.Render("  Ask the AI to create one, e.g. ") +
 			CommandStyle.Render("\"buy $100 of BTC every day\"")
 	}
 
 	var lines []string
-	lines = append(lines, SecondaryStyle.Render("  Automation Rules\n"))
+	lines = append(lines, SectionHeader("Automation Rules"))
 
 	for _, r := range rules {
 		statusStr := "running"
@@ -1886,7 +1888,7 @@ func RenderAutoList(rules []automation.AutoRule) string {
 		}
 		lines = append(lines, details)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n") + NextSteps("/auto add", "/trigger list")
 }
 
 // RenderAutoConfirm renders a confirmation card for an automation fire.
@@ -1910,7 +1912,7 @@ func RenderAutoConfirm(rule automation.AutoRule, price float64) string {
 
 // RenderAutoHelp shows /auto usage.
 func RenderAutoHelp() string {
-	header := SecondaryStyle.Render("  /auto — natural language automation\n")
+	header := SectionHeader("/auto — natural language automation")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/auto list") + DimStyle.Render("                    — view all rules"),
@@ -2031,12 +2033,13 @@ func RenderBacktestCard(result *backtest.Result) string {
 		Width(cardWidth).
 		Render(content)
 
-	return SecondaryStyle.Render("  Backtest Results") + "\n" + box
+	return SecondaryStyle.Render("  Backtest Results") + "\n" + box +
+		NextSteps("/backtest activate", "/auto list")
 }
 
 // RenderBacktestHelp shows /backtest usage.
 func RenderBacktestHelp() string {
-	header := SecondaryStyle.Render("  /backtest — strategy backtesting\n")
+	header := SectionHeader("/backtest — strategy backtesting")
 	lines := []string{
 		header,
 		"  " + CommandStyle.Render("/backtest presets") + DimStyle.Render("                — list preset strategies"),
@@ -2058,7 +2061,7 @@ func RenderBacktestPresets() string {
 	presets := backtest.GetPresets()
 
 	var lines []string
-	lines = append(lines, SecondaryStyle.Render("  Backtest Presets\n"))
+	lines = append(lines, SectionHeader("Backtest Presets"))
 
 	for _, p := range presets {
 		name := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(padRight(p.Strategy.Name, 20))
@@ -2340,7 +2343,7 @@ func RenderMemoryList(entries []memory.Entry) string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Saved Memories")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	var rows []string
 	rows = append(rows, "", header, divider, "")
@@ -2357,7 +2360,7 @@ func RenderMemoryList(entries []memory.Entry) string {
 	}
 
 	rows = append(rows, "", DimStyle.Render("  /memory clear to reset  •  /memory remove <id> to delete one"))
-	return strings.Join(rows, "\n")
+	return strings.Join(rows, "\n") + NextSteps("/memory clear")
 }
 
 // RenderConsensusCard renders the multi-LLM consensus result.
@@ -2365,7 +2368,7 @@ func RenderConsensusCard(result *ai.ConsensusResult) string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render(fmt.Sprintf("  Multi-Model Consensus: %s @ $%.2f", result.Symbol, result.Price))
-	divider := DimStyle.Render("  " + strings.Repeat("─", 60))
+	divider := "  " + Divider(60)
 
 	var rows []string
 	rows = append(rows, "", header, divider, "")
@@ -2376,7 +2379,7 @@ func RenderConsensusCard(result *ai.ConsensusResult) string {
 	thConf := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(fmt.Sprintf("%-10s", "Confidence"))
 	thTime := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("Time")
 	rows = append(rows, thModel+thVerdict+thConf+thTime)
-	rows = append(rows, DimStyle.Render("  "+strings.Repeat("─", 70)))
+	rows = append(rows, "  " + Divider(70))
 
 	for _, v := range result.Verdicts {
 		model := fmt.Sprintf("  %-38s", v.Model)
@@ -2406,7 +2409,7 @@ func RenderConsensusCard(result *ai.ConsensusResult) string {
 		}
 	}
 
-	rows = append(rows, DimStyle.Render("  "+strings.Repeat("─", 70)))
+	rows = append(rows, "  " + Divider(70))
 
 	// Consensus summary.
 	var consensusStyled string
@@ -2434,7 +2437,7 @@ func RenderAnalysisPresets() string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Analysis Presets")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	var rows []string
 	rows = append(rows, "", header, divider, "")
@@ -2453,7 +2456,7 @@ func RenderAnalysisPresets() string {
 	rows = append(rows, DimStyle.Render("  Shortcuts: /analyze sentiment <symbol>  •  /analyze whale <symbol>  •  /analyze defi"))
 	rows = append(rows, "")
 
-	return strings.Join(rows, "\n")
+	return strings.Join(rows, "\n") + NextSteps("/analyze run <preset>")
 }
 
 // RenderAnalyzeHelp renders the /analyze command help.
@@ -2461,7 +2464,7 @@ func RenderAnalyzeHelp() string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Market Analysis")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	return strings.Join([]string{
 		"", header, divider, "",
@@ -2482,7 +2485,7 @@ func RenderConsensusHelp() string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Multi-LLM Consensus")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	return strings.Join([]string{
 		"", header, divider, "",
@@ -2502,7 +2505,7 @@ func RenderConnectHelp() string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Exchange Connectivity")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	return strings.Join([]string{
 		"", header, divider, "",
@@ -2514,7 +2517,7 @@ func RenderConnectHelp() string {
 		"",
 		DimStyle.Render("  Example: /connect binance"),
 		"",
-	}, "\n")
+	}, "\n") + NextSteps("/connect <exchange>")
 }
 
 // RenderWalletHelp renders the /wallet command help.
@@ -2522,7 +2525,7 @@ func RenderWalletHelp() string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Onchain Wallet")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	return strings.Join([]string{
 		"", header, divider, "",
@@ -2531,7 +2534,7 @@ func RenderWalletHelp() string {
 		DimStyle.Render("  Requires onchain/web3 MCP server:"),
 		"  " + CommandStyle.Render("/mcp add web3"),
 		"",
-	}, "\n")
+	}, "\n") + NextSteps("/wallet balance", "/swap")
 }
 
 // RenderBalances renders a unified balance view across paper trading and exchanges.
@@ -2550,7 +2553,7 @@ func RenderBalances(client *api.PapernickClient) string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Unified Balances")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	var rows []string
 	rows = append(rows, "", header, divider, "")
@@ -2565,7 +2568,7 @@ func RenderBalances(client *api.PapernickClient) string {
 	rows = append(rows, DimStyle.Render("  Connect exchanges for more: ")+CommandStyle.Render("/connect"))
 	rows = append(rows, "")
 
-	return strings.Join(rows, "\n")
+	return strings.Join(rows, "\n") + NextSteps("/positions", "/pnl")
 }
 
 // RenderPositions renders a unified positions view.
@@ -2584,7 +2587,7 @@ func RenderPositions(client *api.PapernickClient) string {
 	header := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("  Open Positions")
-	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+	divider := "  " + Divider(50)
 
 	var rows []string
 	rows = append(rows, "", header, divider, "")
@@ -2602,6 +2605,6 @@ func RenderPositions(client *api.PapernickClient) string {
 	}
 
 	rows = append(rows, "")
-	return strings.Join(rows, "\n")
+	return strings.Join(rows, "\n") + NextSteps("/sell", "/pnl")
 }
 

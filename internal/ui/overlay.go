@@ -189,6 +189,8 @@ func renderHelpDialog(screenW, screenH int) string {
 		key("/analytics") + dim("  Analytics"),
 		key("/risk") + dim("       Guardrails"),
 		key("/auto") + dim("       Automation"),
+		key("/trigger") + dim("    Cond. trades"),
+		key("/strategy") + dim("   Strategies"),
 		key("/config") + dim("     Settings"),
 		key("/mcp") + dim("        MCP servers"),
 		key("/guide") + dim("      Guide"),
@@ -342,7 +344,7 @@ func renderPaletteDialog(cursor, scrollOffset int, filter string, filtered []str
 
 	var rows []string
 	rows = append(rows, searchLine)
-	rows = append(rows, DimStyle.Render(strings.Repeat("─", 36)))
+	rows = append(rows, Divider(36))
 
 	maxVisible := 12
 	endIdx := scrollOffset + maxVisible
@@ -445,6 +447,8 @@ var paletteCommands = []string{
 	"/notify test|Send test notification",
 	"/analytics|Portfolio analytics dashboard",
 	"/analyze|Technical analysis for a symbol",
+	"/analyze presets|Browse analysis presets",
+	"/analyze run|Run an analysis preset",
 	"/backtest|Backtest a trading strategy",
 	"/backtest presets|Browse preset strategies",
 	"/backtest run|Run a preset backtest",

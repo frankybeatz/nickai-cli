@@ -1,6 +1,11 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Version is set from main at startup.
 var Version = "dev"
@@ -181,6 +186,47 @@ func StatusIndicator(status string) string {
 	default:
 		return lipgloss.NewStyle().Foreground(ColorDim).Render("? ")
 	}
+}
+
+// --- Shared rendering primitives ---
+
+// SectionHeader renders a consistent card header.
+func SectionHeader(title string) string {
+	return SecondaryStyle.Render("  "+title) + "\n"
+}
+
+// SectionHeaderWithCount renders "  Title  (N total)".
+func SectionHeaderWithCount(title string, count int) string {
+	return SecondaryStyle.Render("  "+title) +
+		DimStyle.Render(fmt.Sprintf("  (%d total)", count)) + "\n"
+}
+
+// Divider renders a themed horizontal rule.
+func Divider(width int) string {
+	return DimStyle.Render(strings.Repeat("─", width))
+}
+
+// KeyValue renders "  key   value" with aligned columns.
+func KeyValue(key, value string, keyWidth int) string {
+	pad := strings.Repeat(" ", max(1, keyWidth-len(key)))
+	return "  " + DimStyle.Render(key) + pad + value
+}
+
+// EmptyState renders a styled empty-state message.
+func EmptyState(message string) string {
+	return DimStyle.Render("  " + message)
+}
+
+// nextSteps renders a "Try:" hint footer with 1-2 suggested commands.
+func NextSteps(hints ...string) string {
+	if len(hints) == 0 {
+		return ""
+	}
+	parts := make([]string, len(hints))
+	for i, h := range hints {
+		parts[i] = DimStyle.Render(h)
+	}
+	return "\n" + DimStyle.Render("  Try: ") + strings.Join(parts, DimStyle.Render("  ·  "))
 }
 
 // InputPrompt is the styled prompt prefix.

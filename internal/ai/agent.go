@@ -81,7 +81,17 @@ When the user asks about Polymarket or prediction markets, use available MCP too
 4. Flag contracts where the gap is largest (potential mispricing)
 Always note that prediction markets carry risk and past event analysis doesn't guarantee outcomes.
 
-When the user shares preferences (risk tolerance, favorite symbols, position sizes) or when you observe patterns in their trading, use save_memory to remember for future sessions. Use recall_memory to search past context. After showing backtest results, offer to activate the strategy as a live monitoring rule using the activate_strategy tool.`
+When the user shares preferences (risk tolerance, favorite symbols, position sizes) or when you observe patterns in their trading, use save_memory to remember for future sessions. Use recall_memory to search past context. After showing backtest results, offer to activate the strategy as a live monitoring rule using the activate_strategy tool.
+
+Available commands the user can run:
+Trading: /buy, /sell, /price, /orders, /pnl, /history
+Analysis: /analyze, /chart, /backtest, /consensus, /risk, /analytics
+Automation: /auto, /trigger, /alert, /watch
+Multi-Vertical: /connect, /balances, /positions, /markets, /wallet, /swap, /gas, /stock, /screen, /bet, /odds, /lines, /funding
+Memory: /memory, /strategy, /notify
+Setup: /config, /mcp, /credential, /model, /theme
+
+When answering questions, you can suggest relevant commands the user can run to take action.`
 
 // mcpRegistryHint lists MCP servers the user can install for extra capabilities.
 const mcpRegistryHint = `
@@ -205,6 +215,12 @@ type Agent struct {
 
 	// Memory prompt suffix injected when memories exist.
 	memoryPromptSuffix string
+
+	// Portfolio context suffix (injected on boot and after trades).
+	portfolioSuffix string
+
+	// Recent activity suffix (last 3 commands the user ran).
+	recentActivitySuffix string
 }
 
 // NewAgent creates an agent with the given PaperNick client, Anthropic API key,
@@ -295,6 +311,16 @@ func (a *Agent) SetMemoryInfo(info string) {
 	a.memoryPromptSuffix = info
 }
 
+// SetPortfolioContext sets a portfolio summary suffix for the system prompt.
+func (a *Agent) SetPortfolioContext(info string) {
+	a.portfolioSuffix = info
+}
+
+// SetRecentActivity sets a recent-commands suffix for the system prompt.
+func (a *Agent) SetRecentActivity(info string) {
+	a.recentActivitySuffix = info
+}
+
 // effectivePrompt returns the system prompt with any dynamic suffixes.
 func (a *Agent) effectivePrompt() string {
 	p := a.systemPrompt
@@ -306,6 +332,12 @@ func (a *Agent) effectivePrompt() string {
 	}
 	if a.memoryPromptSuffix != "" {
 		p += "\n\n" + a.memoryPromptSuffix
+	}
+	if a.portfolioSuffix != "" {
+		p += "\n\n" + a.portfolioSuffix
+	}
+	if a.recentActivitySuffix != "" {
+		p += "\n\n" + a.recentActivitySuffix
 	}
 	return p
 }

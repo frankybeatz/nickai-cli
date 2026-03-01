@@ -112,6 +112,7 @@ type aiStreamDoneMsg struct {
 // apiResponseMsg carries the result of an async API command.
 type apiResponseMsg struct {
 	content string
+	isTrade bool // when true, refresh portfolio context after displaying
 }
 
 // alertCheckMsg triggers a periodic alert check.
@@ -159,6 +160,9 @@ type autoRuleFiredMsg struct {
 	price float64
 }
 
+// statusFlashExpiredMsg signals the status flash should clear.
+type statusFlashExpiredMsg struct{}
+
 // tickerFetchMsg signals time to fetch new ticker data.
 type tickerFetchMsg struct{}
 
@@ -171,7 +175,7 @@ type tickerUpdateMsg struct {
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // Thinking text variants.
-var thinkingTexts = []string{"Thinking...", "Analyzing...", "Reasoning..."}
+var thinkingTexts = []string{"Thinking...", "Analyzing...", "Reasoning...", "Almost there..."}
 
 // Boot sequence ASCII logo — block letters for readability.
 var bootLogo = []string{
@@ -265,6 +269,19 @@ type Model struct {
 	autoTicking      bool
 	pendingAutoRule  *automation.AutoRule
 	pendingAutoPrice float64
+
+	// Stream origin for AI-routed commands (for next-step hints).
+	streamOrigin string
+
+	// Ticker direction tracking.
+	prevTickerPrices map[string]float64
+
+	// Status flash (brief confirmations).
+	statusFlash       string
+	statusFlashExpiry time.Time
+
+	// Recent commands ring buffer (last 3).
+	recentCommands []string
 
 	// Overlay dialog state.
 	dialog DialogState
@@ -365,6 +382,16 @@ func New() Model {
 	if agent != nil && memStore != nil {
 		if info := memStore.ForPrompt(500); info != "" {
 			agent.SetMemoryInfo("Here are memories from previous sessions:\n" + info)
+		}
+	}
+
+	// Inject portfolio context into agent on boot.
+	if agent != nil && client.IsConfigured() {
+		if portfolio, err := client.GetPortfolio(); err == nil {
+			summary := buildPortfolioSummary(portfolio)
+			if summary != "" {
+				agent.SetPortfolioContext(summary)
+			}
 		}
 	}
 
@@ -600,8 +627,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				rendered := renderMarkdown(msg.finalContent, m.width-8)
 				m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick:") + "\n" + rendered
+				// Append origin-based next-step hints.
+				if hints := streamOriginHints(m.streamOrigin); hints != "" {
+					m.messages[len(m.messages)-1].content += hints
+				}
 			}
 		}
+		m.streamOrigin = ""
 		m.updateViewport()
 		return m, nil
 
@@ -630,6 +662,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Replace the last loading message with the actual result.
 		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
 			m.messages[len(m.messages)-1].content = msg.content
+		}
+		// Refresh portfolio context after trades so AI knows the new state.
+		if msg.isTrade && m.agent != nil && m.client.IsConfigured() {
+			if portfolio, err := m.client.GetPortfolio(); err == nil {
+				if summary := buildPortfolioSummary(portfolio); summary != "" {
+					m.agent.SetPortfolioContext(summary)
+				}
+			}
 		}
 		m.updateViewport()
 		return m, nil
@@ -938,6 +978,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case statusFlashExpiredMsg:
+		m.statusFlash = ""
+		return m, nil
+
 	case tickerFetchMsg:
 		if !m.tickerTicking {
 			return m, nil
@@ -953,6 +997,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickerUpdateMsg:
 		if len(msg.prices) > 0 {
+			// Store previous prices for direction arrows before updating.
+			if m.prevTickerPrices == nil {
+				m.prevTickerPrices = make(map[string]float64)
+			}
+			for _, p := range m.tickerPrices {
+				m.prevTickerPrices[p.Symbol] = p.Price
+			}
 			m.tickerPrices = msg.prices
 		}
 		if !m.tickerTicking {
@@ -1138,6 +1189,11 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			isUser:  true,
 		})
 
+		// Track recent commands for AI context.
+		if strings.HasPrefix(input, "/") {
+			m.trackRecentCommand(input)
+		}
+
 		result := commands.Route(input)
 
 		switch result.Type {
@@ -1146,9 +1202,11 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case commands.TypeClear:
 			m.messages = nil
-			m.viewport.SetContent(RenderWelcome(m.width, m.client.IsConfigured()))
+			m.viewport.SetContent(m.welcomeContent())
 			m.viewport.GotoBottom()
-			return m, nil
+			m.statusFlash = "Cleared"
+			m.statusFlashExpiry = time.Now().Add(2 * time.Second)
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return statusFlashExpiredMsg{} })
 
 		case commands.TypeChat:
 			// Streaming AI call with loading spinner.
@@ -1514,6 +1572,10 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		m.updateViewport()
+		// Schedule status flash expiry if one was just set (e.g. /theme, /model).
+		if m.statusFlash != "" {
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg { return statusFlashExpiredMsg{} })
+		}
 		return m, nil
 	}
 
@@ -1746,7 +1808,7 @@ func (m Model) executeVimCommand(cmd string) (tea.Model, tea.Cmd) {
 
 	case "clear":
 		m.messages = nil
-		m.viewport.SetContent(RenderWelcome(m.width, m.client.IsConfigured()))
+		m.viewport.SetContent(m.welcomeContent())
 		m.viewport.GotoBottom()
 		return m, nil
 
@@ -1943,7 +2005,7 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						Rationale: fmt.Sprintf("Trigger %s fired on %s", triggerID[:6], triggerSymbol),
 						Timestamp: time.Now(),
 					})
-					return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+					return apiResponseMsg{content: RenderOrderConfirmation(order, width), isTrade: true}
 				},
 			)
 		}
@@ -2022,7 +2084,7 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					})
 					notify.Send(notifyCfg, "Trade Executed",
 						fmt.Sprintf("%s %s — %s", strings.ToUpper(order.Side), order.Symbol, ruleDesc))
-					return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+					return apiResponseMsg{content: RenderOrderConfirmation(order, width), isTrade: true}
 				},
 			)
 		}
@@ -2091,7 +2153,7 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						Rationale: fmt.Sprintf("TWAP slice %d/%d for %s", s.Executed+1, s.SliceCount, s.ID[:6]),
 						Timestamp: time.Now(),
 					})
-					return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+					return apiResponseMsg{content: RenderOrderConfirmation(order, width), isTrade: true}
 				},
 			)
 		}
@@ -2159,7 +2221,7 @@ func (m Model) updateConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					Source:    "manual",
 					Timestamp: time.Now(),
 				})
-				return apiResponseMsg{content: RenderOrderConfirmation(order, width)}
+				return apiResponseMsg{content: RenderOrderConfirmation(order, width), isTrade: true}
 			},
 		)
 
@@ -2859,6 +2921,7 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 		m.streaming = true
 		m.loadingFrame = 0
 		m.loadingText = "Activating strategy..."
+		m.streamOrigin = "backtest"
 		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
 
 		tokenCh := make(chan string, 100)
@@ -2889,6 +2952,7 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 		m.streaming = true
 		m.loadingFrame = 0
 		m.loadingText = "Building backtest..."
+		m.streamOrigin = "backtest"
 		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
 
 		tokenCh := make(chan string, 100)
@@ -3035,7 +3099,7 @@ func (m *Model) handleConsensus(args []string) (string, tea.Cmd) {
 	if sub == "models" {
 		var rows []string
 		header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("  Consensus Model Tiers")
-		divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+		divider := "  " + Divider(50)
 		rows = append(rows, "", header, divider, "")
 
 		tierLabel := func(name string) string {
@@ -3232,6 +3296,7 @@ func (m *Model) runAnalysisPreset(preset *backtest.AnalysisPreset, extraArgs str
 	m.streaming = true
 	m.loadingFrame = 0
 	m.loadingText = "Running " + preset.Name + "..."
+	m.streamOrigin = "analyze"
 	m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
 
 	tokenCh := make(chan string, 100)
@@ -3350,7 +3415,7 @@ func (m *Model) handleMarkets(args []string) (string, tea.Cmd) {
 		prompt = "Search prediction markets for: " + strings.Join(args, " ")
 	}
 
-	return m.streamToAI(prompt, "Searching markets...")
+	return m.streamToAI(prompt, "Searching markets...", "markets")
 }
 
 func (m *Model) handleBet(args []string) (string, tea.Cmd) {
@@ -3366,7 +3431,7 @@ func (m *Model) handleBet(args []string) (string, tea.Cmd) {
 	}
 	prompt := fmt.Sprintf("Place a prediction market bet: market=%s, side=%s, amount=$%s. Use the polymarket tools to execute.",
 		args[0], args[1], args[2])
-	return m.streamToAI(prompt, "Placing bet...")
+	return m.streamToAI(prompt, "Placing bet...", "bet")
 }
 
 func (m *Model) handleWallet(args []string) (string, tea.Cmd) {
@@ -3387,7 +3452,7 @@ func (m *Model) handleWallet(args []string) (string, tea.Cmd) {
 				CommandStyle.Render("/config set anthropic_key <key>"), nil
 		}
 		prompt := "Check the wallet balance for address: " + args[1] + ". Use onchain/web3 MCP tools if available."
-		return m.streamToAI(prompt, "Checking wallet...")
+		return m.streamToAI(prompt, "Checking wallet...", "wallet")
 
 	default:
 		if m.agent == nil {
@@ -3396,7 +3461,7 @@ func (m *Model) handleWallet(args []string) (string, tea.Cmd) {
 				CommandStyle.Render("/config set anthropic_key <key>"), nil
 		}
 		prompt := "Wallet command: " + strings.Join(args, " ")
-		return m.streamToAI(prompt, "Processing wallet request...")
+		return m.streamToAI(prompt, "Processing wallet request...", "wallet")
 	}
 }
 
@@ -3416,7 +3481,7 @@ func (m *Model) handleSwap(args []string) (string, tea.Cmd) {
 	to := strings.ToUpper(args[1])
 	amount := args[2]
 	prompt := fmt.Sprintf("Swap %s %s to %s using Jupiter (Solana) or LiFi (cross-chain) MCP servers. Confirm before executing.", amount, from, to)
-	return m.streamToAI(prompt, fmt.Sprintf("Swapping %s %s → %s...", amount, from, to))
+	return m.streamToAI(prompt, fmt.Sprintf("Swapping %s %s → %s...", amount, from, to), "swap")
 }
 
 func (m *Model) handleGas(args []string) (string, tea.Cmd) {
@@ -3430,7 +3495,7 @@ func (m *Model) handleGas(args []string) (string, tea.Cmd) {
 		chain = strings.ToLower(args[0])
 	}
 	prompt := fmt.Sprintf("Fetch current gas prices for %s. Show fast, standard, and slow estimates. Use onchain MCP tools if available.", chain)
-	return m.streamToAI(prompt, "Fetching gas prices...")
+	return m.streamToAI(prompt, "Fetching gas prices...", "gas")
 }
 
 func (m *Model) handleStock(args []string) (string, tea.Cmd) {
@@ -3446,7 +3511,7 @@ func (m *Model) handleStock(args []string) (string, tea.Cmd) {
 	}
 	ticker := strings.ToUpper(args[0])
 	prompt := fmt.Sprintf("Analyze stock %s — current price, key fundamentals (P/E, market cap, revenue), and recent news. Use Alpaca MCP if connected, otherwise use your knowledge.", ticker)
-	return m.streamToAI(prompt, "Analyzing "+ticker+"...")
+	return m.streamToAI(prompt, "Analyzing "+ticker+"...", "stock")
 }
 
 func (m *Model) handleScreen(args []string) (string, tea.Cmd) {
@@ -3461,7 +3526,7 @@ func (m *Model) handleScreen(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/config set anthropic_key <key>"), nil
 	}
 	prompt := "Screen stocks matching these criteria: " + strings.Join(args, " ") + ". List top 10 matches with ticker, price, and why they match."
-	return m.streamToAI(prompt, "Screening stocks...")
+	return m.streamToAI(prompt, "Screening stocks...", "stock")
 }
 
 func (m *Model) handleOdds(args []string) (string, tea.Cmd) {
@@ -3476,7 +3541,7 @@ func (m *Model) handleOdds(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/config set anthropic_key <key>"), nil
 	}
 	prompt := "Find current betting odds for: " + strings.Join(args, " ") + ". Show moneyline, spread, and over/under from major sportsbooks. Use brave-search MCP or web tools if available."
-	return m.streamToAI(prompt, "Finding odds...")
+	return m.streamToAI(prompt, "Finding odds...", "bet")
 }
 
 func (m *Model) handleLines(args []string) (string, tea.Cmd) {
@@ -3491,7 +3556,7 @@ func (m *Model) handleLines(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/config set anthropic_key <key>"), nil
 	}
 	prompt := "Show line movement and betting line history for: " + strings.Join(args, " ") + ". Highlight any significant shifts. Use brave-search MCP or web tools if available."
-	return m.streamToAI(prompt, "Checking line movement...")
+	return m.streamToAI(prompt, "Checking line movement...", "bet")
 }
 
 func (m *Model) handleFunding(args []string) (string, tea.Cmd) {
@@ -3504,15 +3569,17 @@ func (m *Model) handleFunding(args []string) (string, tea.Cmd) {
 	if len(args) > 0 {
 		prompt = "Show funding rates for: " + strings.Join(args, " ")
 	}
-	return m.streamToAI(prompt, "Fetching funding rates...")
+	return m.streamToAI(prompt, "Fetching funding rates...", "funding")
 }
 
 // streamToAI is a helper that sends a prompt to the AI agent with streaming.
-func (m *Model) streamToAI(prompt, loadingText string) (string, tea.Cmd) {
+// origin identifies the command source for post-stream next-step hints.
+func (m *Model) streamToAI(prompt, loadingText, origin string) (string, tea.Cmd) {
 	m.loading = true
 	m.streaming = true
 	m.loadingFrame = 0
 	m.loadingText = loadingText
+	m.streamOrigin = origin
 	m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
 
 	tokenCh := make(chan string, 100)
@@ -3529,6 +3596,48 @@ func (m *Model) streamToAI(prompt, loadingText string) (string, tea.Cmd) {
 		waitForStreamToken(tokenCh),
 		waitForConfirmation(confirmCh),
 	)
+}
+
+// buildPortfolioSummary creates a one-liner portfolio context for the AI agent.
+func buildPortfolioSummary(portfolio *api.Portfolio) string {
+	if portfolio == nil {
+		return ""
+	}
+	parts := []string{fmt.Sprintf("Portfolio: $%.0f", portfolio.TotalValue)}
+	for _, pos := range portfolio.Assets {
+		parts = append(parts, fmt.Sprintf("%s %.4f", pos.Symbol, pos.Quantity))
+	}
+	parts = append(parts, fmt.Sprintf("Cash $%.0f", portfolio.AvailableCash))
+	return strings.Join(parts, " | ")
+}
+
+// trackRecentCommand adds a command summary to the ring buffer and updates AI context.
+func (m *Model) trackRecentCommand(summary string) {
+	m.recentCommands = append(m.recentCommands, summary)
+	if len(m.recentCommands) > 3 {
+		m.recentCommands = m.recentCommands[len(m.recentCommands)-3:]
+	}
+	if m.agent != nil {
+		m.agent.SetRecentActivity("Recent: " + strings.Join(m.recentCommands, " | "))
+	}
+}
+
+// streamOriginHints returns next-step hints based on stream origin.
+func streamOriginHints(origin string) string {
+	switch origin {
+	case "analyze":
+		return NextSteps("/chart <sym>", "/buy <sym>")
+	case "backtest":
+		return NextSteps("/backtest activate", "/auto list")
+	case "consensus":
+		return NextSteps("/buy", "/analyze")
+	case "bet":
+		return NextSteps("/odds", "/polymarket")
+	case "stock":
+		return NextSteps("/chart", "/screen")
+	default:
+		return ""
+	}
 }
 
 // --- Helper: streaming ---
@@ -4455,6 +4564,9 @@ func (m *Model) handleTheme(args []string) string {
 	m.cfg.Theme = name
 	_ = m.cfg.Save()
 
+	m.statusFlash = "Theme: " + name
+	m.statusFlashExpiry = time.Now().Add(2 * time.Second)
+
 	return BotMsgStyle.Render("nick: ") + "Theme set to " + BrandStyle.Render(name) + "."
 }
 
@@ -4524,6 +4636,9 @@ func (m *Model) handleModel(args []string) string {
 		}
 	}
 
+	m.statusFlash = "Model: " + name
+	m.statusFlashExpiry = time.Now().Add(2 * time.Second)
+
 	return BotMsgStyle.Render("nick: ") + "Switched to " + BrandStyle.Render(name) + "."
 }
 
@@ -4582,9 +4697,22 @@ func home() string {
 	return h
 }
 
+// welcomeContent returns the welcome screen with dynamic context counts.
+func (m Model) welcomeContent() string {
+	memCount := 0
+	if m.memoryStore != nil {
+		memCount = len(m.memoryStore.Entries)
+	}
+	mcpCount := 0
+	if m.mcpManager != nil {
+		mcpCount = len(m.mcpManager.Connections())
+	}
+	return RenderWelcome(m.width, m.client.IsConfigured(), memCount, mcpCount)
+}
+
 func (m *Model) updateViewport() {
 	if len(m.messages) == 0 {
-		content := RenderWelcome(m.width, m.client.IsConfigured())
+		content := m.welcomeContent()
 		m.viewContent = content
 		m.viewport.SetContent(content)
 		return
@@ -4594,10 +4722,13 @@ func (m *Model) updateViewport() {
 	if m.loading && len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
 		frame := spinnerFrames[m.loadingFrame%len(spinnerFrames)]
 		text := thinkingTexts[(m.loadingFrame/15)%len(thinkingTexts)]
+		if m.streaming && m.loadingFrame > 60 {
+			text += DimStyle.Render(" (streaming)")
+		}
 		m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick: ") + frame + " " + text
 	}
 
-	welcome := RenderWelcome(m.width, m.client.IsConfigured())
+	welcome := m.welcomeContent()
 	var parts []string
 	parts = append(parts, welcome)
 	for _, msg := range m.messages {
@@ -4664,19 +4795,36 @@ func (m Model) View() string {
 		var tickerParts []string
 		for _, p := range m.tickerPrices {
 			sym := strings.TrimSuffix(p.Symbol, "USDT")
+			arrow := DimStyle.Render("─")
+			if prev, ok := m.prevTickerPrices[p.Symbol]; ok {
+				if p.Price > prev {
+					arrow = lipgloss.NewStyle().Foreground(ColorPrimary).Render("▲")
+				} else if p.Price < prev {
+					arrow = lipgloss.NewStyle().Foreground(ColorError).Render("▼")
+				}
+			}
 			tickerParts = append(tickerParts,
-				DimStyle.Render(sym+" ")+BrandStyle.Render(formatPrice(p.Price)))
+				arrow+DimStyle.Render(sym+" ")+BrandStyle.Render(formatPrice(p.Price)))
 		}
 		tickerStr = strings.Join(tickerParts, "  ")
 	}
 
+	// Build right-side status indicators.
+	statusRight := m.renderStatusRight()
+	leftContent := topLeft + "    " + tickerStr
+	rightWidth := lipgloss.Width(statusRight)
+	leftWidth := m.width - rightWidth - 3
+	if leftWidth < 20 {
+		leftWidth = 20
+	}
+	leftPart := lipgloss.NewStyle().Width(leftWidth).Render(leftContent)
 	topBar := lipgloss.NewStyle().
 		Background(lipgloss.Color("#0D0D1A")).
 		Foreground(ColorPrimary).
 		Bold(true).
 		Width(m.width).
 		Padding(0, 1).
-		Render(topLeft + "    " + tickerStr)
+		Render(leftPart + statusRight)
 
 	inputBar := m.renderInputBar()
 
@@ -4817,6 +4965,45 @@ func (m Model) renderBootSequence() string {
 		Render(content)
 }
 
+
+// renderStatusRight returns the right-aligned top bar status (MCP, memories, model, risk).
+func (m Model) renderStatusRight() string {
+	// Show status flash if active.
+	if m.statusFlash != "" && time.Now().Before(m.statusFlashExpiry) {
+		return lipgloss.NewStyle().Foreground(ColorPrimary).Render(m.statusFlash)
+	}
+
+	var parts []string
+
+	// MCP connections count.
+	if m.mcpManager != nil && m.mcpManager.ConnectionCount() > 0 {
+		parts = append(parts,
+			lipgloss.NewStyle().Foreground(ColorPrimary).Render("●")+
+				DimStyle.Render(fmt.Sprintf(" %d MCP", m.mcpManager.ConnectionCount())))
+	}
+
+	// Memory count.
+	if m.memoryStore != nil && len(m.memoryStore.Entries) > 0 {
+		parts = append(parts,
+			lipgloss.NewStyle().Foreground(ColorPrimary).Render("●")+
+				DimStyle.Render(fmt.Sprintf(" %d memories", len(m.memoryStore.Entries))))
+	}
+
+	// Active model.
+	if m.agent != nil {
+		parts = append(parts, DimStyle.Render(m.agent.ModelID()))
+	}
+
+	// Risk guardrail indicator.
+	if m.riskLimits != nil && !m.riskLimits.IsEmpty() {
+		parts = append(parts, lipgloss.NewStyle().Foreground(ColorWarning).Render("🛡"))
+	}
+
+	if len(parts) == 0 {
+		return ""
+	}
+	return DimStyle.Render(strings.Join(parts, "  "))
+}
 
 // statusIndicators returns the right-aligned status string (API dot, model, alerts).
 func (m Model) statusIndicators() string {

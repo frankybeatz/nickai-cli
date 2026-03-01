@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"math/rand"
 	"strings"
 
@@ -24,11 +25,25 @@ var startupTaglines = []string{
 	"Sentiment analysis at 3am so you don't have to be.",
 	"The only leverage here is AI leverage.",
 	"From /buy to Lambo. Results may vary.",
+	"Memory-augmented. Multi-model. Fully autonomous.",
+	"10 AI models. One consensus. Zero emotion.",
+	"Your strategies backtest, activate, and execute — unattended.",
+	"Crypto, stocks, prediction markets — one terminal.",
+	"The agents remember. The strategies adapt. The terminal evolves.",
 }
 
 // RenderWelcome returns the NickAI branded welcome screen.
 // isConfigured indicates whether the user has an API key set.
-func RenderWelcome(width int, isConfigured bool) string {
+// memCount and mcpCount are shown to returning users as context indicators.
+func RenderWelcome(width int, isConfigured bool, memCount ...int) string {
+	memoryCount := 0
+	mcpCount := 0
+	if len(memCount) > 0 {
+		memoryCount = memCount[0]
+	}
+	if len(memCount) > 1 {
+		mcpCount = memCount[1]
+	}
 	// Constrain the hero box to a comfortable reading width.
 	boxInner := min(width-6, 66)
 	if boxInner < 40 {
@@ -111,10 +126,12 @@ func RenderWelcome(width int, isConfigured bool) string {
 			DimStyle.Render(" — connect your AI") +
 			"\n" + num("3. ") + CommandStyle.Render("/mcp quick") +
 			DimStyle.Render("              — install free market data servers") +
-			"\n" + num("4. ") + DimStyle.Render("Ask me anything — ") +
+			"\n" + num("4. ") + DimStyle.Render("Start exploring — ") +
 			lipgloss.NewStyle().Foreground(ColorWhite).Render("\"buy 0.5 ETH\"") +
 			DimStyle.Render(", ") +
-			lipgloss.NewStyle().Foreground(ColorWhite).Render("\"show my portfolio\"")
+			lipgloss.NewStyle().Foreground(ColorWhite).Render("/analyze BTC") +
+			DimStyle.Render(", ") +
+			lipgloss.NewStyle().Foreground(ColorWhite).Render("/consensus ETH")
 
 		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
 			DimStyle.Render("$100k fake money to experiment. Zero risk.")
@@ -146,9 +163,22 @@ func RenderWelcome(width int, isConfigured bool) string {
 			"Ask Nick to backtest any strategy in plain English",
 			"/guide to learn the ropes interactively",
 			"/polymarket scan for prediction market analysis",
+			"/memory — Nick remembers your preferences across sessions",
+			"/consensus BTC — get opinions from 4+ AI models",
+			"/backtest run rsi-reversal BTC — test strategies on real data",
+			"/connect binance — link a real exchange via MCP",
+			"/analyze sentiment ETH — run AI analysis presets",
 		}
 		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
 			DimStyle.Render("Tip: "+tips[rand.Intn(len(tips))])
+
+		// Dynamic context for returning users.
+		if memoryCount > 0 {
+			tip += "\n" + DimStyle.Render(fmt.Sprintf("  ● %d memories loaded from last session", memoryCount))
+		}
+		if mcpCount > 0 {
+			tip += "\n" + DimStyle.Render(fmt.Sprintf("  ● %d MCP servers connected", mcpCount))
+		}
 	}
 
 	// Assemble inner content.
