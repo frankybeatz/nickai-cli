@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -46,15 +47,117 @@ const (
 	TypeGuide
 	TypeMemory
 	TypeConsensus
+
+	// v0.5.1 — multi-vertical commands.
+	TypeConnect   // /connect [exchange]
+	TypeBalances  // /balances, /bal
+	TypePositions // /positions, /pos
+	TypeMarkets   // /markets
+	TypeBet       // /bet
+	TypeWallet    // /wallet
+	TypeSwap      // /swap
+	TypeGas       // /gas
+	TypeStock     // /stock
+	TypeScreen    // /screen
+	TypeOdds      // /odds
+	TypeLines     // /lines
+	TypeFunding   // /funding
+
 	TypeUnknown
 )
 
 // Result holds the parsed result of user input.
 type Result struct {
-	Type      CommandType
-	Input     string   // original input
-	Args      []string // arguments after the command
-	IsCommand bool
+	Type       CommandType
+	SubCommand string   // e.g. "scan", "analyze", "connect"
+	Input      string   // original input
+	Args       []string // arguments after the subcommand (or after the command if no sub)
+	IsCommand  bool
+}
+
+// allCommands maps every command name (including aliases) to its type.
+var allCommands = map[string]CommandType{
+	"/help":       TypeHelp,
+	"/agents":     TypeAgents,
+	"/templates":  TypeTemplates,
+	"/status":     TypeStatus,
+	"/orders":     TypeOrders,
+	"/price":      TypePrice,
+	"/p":          TypePrice,
+	"/buy":        TypeBuy,
+	"/b":          TypeBuy,
+	"/sell":       TypeSell,
+	"/s":          TypeSell,
+	"/config":     TypeConfig,
+	"/clear":      TypeClear,
+	"/quit":       TypeQuit,
+	"/exit":       TypeQuit,
+	"/credential": TypeCredential,
+	"/cred":       TypeCredential,
+	"/workflow":   TypeWorkflow,
+	"/wf":         TypeWorkflow,
+	"/logs":       TypeLogs,
+	"/log":        TypeLogs,
+	"/man":        TypeMan,
+	"/manual":     TypeMan,
+	"/watch":      TypeWatch,
+	"/snapshot":   TypeSnapshot,
+	"/snap":       TypeSnapshot,
+	"/market":     TypeMarket,
+	"/pnl":        TypePnl,
+	"/history":    TypeHistory,
+	"/journal":    TypeHistory,
+	"/alert":      TypeAlert,
+	"/chart":      TypeChart,
+	"/theme":      TypeTheme,
+	"/model":      TypeModel,
+	"/models":     TypeModel,
+	"/mcp":        TypeMCP,
+	"/trigger":    TypeTrigger,
+	"/trig":       TypeTrigger,
+	"/risk":       TypeRisk,
+	"/strategy":   TypeStrategy,
+	"/strat":      TypeStrategy,
+	"/notify":     TypeNotify,
+	"/analytics":  TypeAnalytics,
+	"/analyze":    TypeAnalyze,
+	"/auto":       TypeAuto,
+	"/automation": TypeAuto,
+	"/backtest":   TypeBacktest,
+	"/bt":         TypeBacktest,
+	"/polymarket": TypePolymarket,
+	"/pm":         TypePolymarket,
+	"/guide":      TypeGuide,
+	"/memory":     TypeMemory,
+	"/mem":        TypeMemory,
+	"/consensus":  TypeConsensus,
+	"/con":        TypeConsensus,
+
+	// Multi-vertical commands.
+	"/connect":   TypeConnect,
+	"/balances":  TypeBalances,
+	"/bal":       TypeBalances,
+	"/positions": TypePositions,
+	"/pos":       TypePositions,
+	"/markets":   TypeMarkets,
+	"/bet":       TypeBet,
+	"/wallet":    TypeWallet,
+	"/swap":      TypeSwap,
+	"/gas":       TypeGas,
+	"/stock":     TypeStock,
+	"/screen":    TypeScreen,
+	"/odds":      TypeOdds,
+	"/lines":     TypeLines,
+	"/funding":   TypeFunding,
+}
+
+// subcommandCommands lists NEW command types that parse SubCommand from args.
+// Existing commands (backtest, analyze, memory, etc.) parse subcommands
+// internally in their handlers for backward compatibility.
+var subcommandCommands = map[CommandType]bool{
+	TypeConnect: true,
+	TypeWallet:  true,
+	TypeMarkets: true,
 }
 
 // Route parses raw user input and returns a Result.
@@ -73,82 +176,44 @@ func Route(input string) Result {
 	cmd := strings.ToLower(parts[0])
 	args := parts[1:]
 
-	switch cmd {
-	case "/help":
-		return Result{Type: TypeHelp, Input: trimmed, Args: args, IsCommand: true}
-	case "/agents":
-		return Result{Type: TypeAgents, Input: trimmed, Args: args, IsCommand: true}
-	case "/templates":
-		return Result{Type: TypeTemplates, Input: trimmed, Args: args, IsCommand: true}
-	case "/status":
-		return Result{Type: TypeStatus, Input: trimmed, Args: args, IsCommand: true}
-	case "/orders":
-		return Result{Type: TypeOrders, Input: trimmed, Args: args, IsCommand: true}
-	case "/price":
-		return Result{Type: TypePrice, Input: trimmed, Args: args, IsCommand: true}
-	case "/buy":
-		return Result{Type: TypeBuy, Input: trimmed, Args: args, IsCommand: true}
-	case "/sell":
-		return Result{Type: TypeSell, Input: trimmed, Args: args, IsCommand: true}
-	case "/config":
-		return Result{Type: TypeConfig, Input: trimmed, Args: args, IsCommand: true}
-	case "/clear":
-		return Result{Type: TypeClear, Input: trimmed, Args: args, IsCommand: true}
-	case "/quit", "/exit":
-		return Result{Type: TypeQuit, Input: trimmed, Args: args, IsCommand: true}
-	case "/credential", "/cred":
-		return Result{Type: TypeCredential, Input: trimmed, Args: args, IsCommand: true}
-	case "/workflow", "/wf":
-		return Result{Type: TypeWorkflow, Input: trimmed, Args: args, IsCommand: true}
-	case "/logs", "/log":
-		return Result{Type: TypeLogs, Input: trimmed, Args: args, IsCommand: true}
-	case "/man", "/manual":
-		return Result{Type: TypeMan, Input: trimmed, Args: args, IsCommand: true}
-	case "/watch":
-		return Result{Type: TypeWatch, Input: trimmed, Args: args, IsCommand: true}
-	case "/snapshot", "/snap":
-		return Result{Type: TypeSnapshot, Input: trimmed, Args: args, IsCommand: true}
-	case "/market":
-		return Result{Type: TypeMarket, Input: trimmed, Args: args, IsCommand: true}
-	case "/pnl":
-		return Result{Type: TypePnl, Input: trimmed, Args: args, IsCommand: true}
-	case "/history", "/journal":
-		return Result{Type: TypeHistory, Input: trimmed, Args: args, IsCommand: true}
-	case "/alert":
-		return Result{Type: TypeAlert, Input: trimmed, Args: args, IsCommand: true}
-	case "/chart":
-		return Result{Type: TypeChart, Input: trimmed, Args: args, IsCommand: true}
-	case "/theme":
-		return Result{Type: TypeTheme, Input: trimmed, Args: args, IsCommand: true}
-	case "/model", "/models":
-		return Result{Type: TypeModel, Input: trimmed, Args: args, IsCommand: true}
-	case "/mcp":
-		return Result{Type: TypeMCP, Input: trimmed, Args: args, IsCommand: true}
-	case "/trigger", "/trig":
-		return Result{Type: TypeTrigger, Input: trimmed, Args: args, IsCommand: true}
-	case "/risk":
-		return Result{Type: TypeRisk, Input: trimmed, Args: args, IsCommand: true}
-	case "/strategy", "/strat":
-		return Result{Type: TypeStrategy, Input: trimmed, Args: args, IsCommand: true}
-	case "/notify":
-		return Result{Type: TypeNotify, Input: trimmed, Args: args, IsCommand: true}
-	case "/analytics":
-		return Result{Type: TypeAnalytics, Input: trimmed, Args: args, IsCommand: true}
-	case "/analyze":
-		return Result{Type: TypeAnalyze, Input: trimmed, Args: args, IsCommand: true}
-	case "/auto", "/automation":
-		return Result{Type: TypeAuto, Input: trimmed, Args: args, IsCommand: true}
-	case "/backtest", "/bt":
-		return Result{Type: TypeBacktest, Input: trimmed, Args: args, IsCommand: true}
-	case "/polymarket", "/pm":
-		return Result{Type: TypePolymarket, Input: trimmed, Args: args, IsCommand: true}
-	case "/guide":
-		return Result{Type: TypeGuide, Input: trimmed, Args: args, IsCommand: true}
-	case "/memory", "/mem":
-		return Result{Type: TypeMemory, Input: trimmed, Args: args, IsCommand: true}
-	case "/consensus", "/con":
-		return Result{Type: TypeConsensus, Input: trimmed, Args: args, IsCommand: true}
-	default:
-		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
+	if ct, ok := allCommands[cmd]; ok {
+		r := Result{Type: ct, Input: trimmed, Args: args, IsCommand: true}
+
+		// Parse subcommand for commands that use them.
+		if subcommandCommands[ct] && len(args) > 0 {
+			r.SubCommand = strings.ToLower(args[0])
+			r.Args = args[1:]
+		}
+
+		return r
 	}
+
+	// Unknown command — try fuzzy suggestion.
+	r := Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
+	if suggestions := fuzzySuggest(cmd, 2); len(suggestions) > 0 {
+		r.Args = []string{"Did you mean " + strings.Join(suggestions, " or ") + "?"}
+	}
+	return r
+}
+
+// fuzzySuggest returns up to maxResults command names that start with the
+// given prefix. Only considers canonical (non-alias) commands.
+func fuzzySuggest(prefix string, maxResults int) []string {
+	// De-duplicate: only suggest the longest form of each command type.
+	seen := map[CommandType]bool{}
+	var matches []string
+	for cmd, ct := range allCommands {
+		if seen[ct] {
+			continue
+		}
+		if strings.HasPrefix(cmd, prefix) && cmd != prefix {
+			matches = append(matches, cmd)
+			seen[ct] = true
+		}
+	}
+	sort.Strings(matches)
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+	return matches
 }

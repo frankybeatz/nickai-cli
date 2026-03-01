@@ -605,6 +605,210 @@ Requires a configured API key.`,
 		},
 		seeAlso: []string{"price", "status"},
 	},
+	"connect": {
+		name:     "connect - connect an exchange",
+		synopsis: "/connect <exchange>",
+		desc: `Connect to a centralized exchange via MCP servers. Maps exchange
+names to the appropriate MCP server and provides setup hints.
+
+Use /connect list to see currently connected exchanges.
+
+Supported exchanges: binance, coinbase, hyperliquid, kraken, bybit, alpaca.`,
+		examples: []string{
+			"/connect binance",
+			"/connect list",
+			"/connect alpaca",
+		},
+		seeAlso: []string{"mcp", "balances", "credential"},
+	},
+	"balances": {
+		name:     "balances - unified balance view",
+		synopsis: "/balances",
+		desc: `Show a unified view of balances across paper trading and any
+connected exchanges. Displays cash, available cash, and total
+portfolio value for each connected account.`,
+		examples: []string{"/balances", "/bal"},
+		seeAlso: []string{"status", "positions", "connect"},
+	},
+	"positions": {
+		name:     "positions - unified positions view",
+		synopsis: "/positions",
+		desc: `Show all open positions across paper trading and connected
+exchanges. Displays symbol, quantity, and value for each position.`,
+		examples: []string{"/positions", "/pos"},
+		seeAlso: []string{"status", "balances", "orders"},
+	},
+	"markets": {
+		name:     "markets - prediction market search",
+		synopsis: "/markets [query]",
+		desc: `Search or browse prediction markets. Without arguments, shows
+trending markets with highest volume. With a query, searches
+for matching markets.
+
+Requires the polymarket MCP server for live data.`,
+		examples: []string{
+			"/markets",
+			"/markets US election",
+			"/markets crypto ETF",
+		},
+		seeAlso: []string{"bet", "polymarket"},
+	},
+	"bet": {
+		name:     "bet - place a prediction market bet",
+		synopsis: "/bet <market> <yes|no> <amount>",
+		desc: `Place a bet on a prediction market event. Requires a market
+identifier, the side (yes or no), and a dollar amount.
+
+Routes through the AI for execution via polymarket MCP tools.
+Requires trade confirmation before execution.`,
+		examples: []string{
+			"/bet \"Trump wins\" yes 50",
+			"/bet \"BTC 100k\" no 25",
+		},
+		seeAlso: []string{"markets", "polymarket", "positions"},
+	},
+	"wallet": {
+		name:     "wallet - onchain wallet operations",
+		synopsis: "/wallet <subcommand> [args]",
+		desc: `Interact with onchain wallets. Check token balances for any
+address across supported chains.
+
+Requires onchain/web3 MCP server for live data.`,
+		examples: []string{
+			"/wallet balance 0xabc...",
+		},
+		seeAlso: []string{"swap", "gas", "connect"},
+	},
+	"swap": {
+		name:     "swap - token swap on DEX",
+		synopsis: "/swap <from> <to> <amount>",
+		desc: `Swap tokens on a decentralized exchange. Routes to Jupiter
+(Solana) or LiFi (cross-chain) MCP servers for execution.
+
+Requires trade confirmation before execution.`,
+		examples: []string{
+			"/swap SOL USDC 10",
+			"/swap ETH USDT 0.5",
+		},
+		seeAlso: []string{"wallet", "gas", "buy"},
+	},
+	"gas": {
+		name:     "gas - blockchain gas prices",
+		synopsis: "/gas [chain]",
+		desc: `Fetch current gas price estimates for a blockchain. Shows fast,
+standard, and slow estimates. Defaults to Ethereum if no chain
+is specified.
+
+Uses onchain MCP tools when available.`,
+		examples: []string{
+			"/gas",
+			"/gas ethereum",
+			"/gas solana",
+		},
+		seeAlso: []string{"wallet", "swap"},
+	},
+	"stock": {
+		name:     "stock - stock analysis",
+		synopsis: "/stock <ticker>",
+		desc: `Analyze a stock by ticker symbol. Shows current price, key
+fundamentals (P/E ratio, market cap, revenue), and recent news.
+
+Uses Alpaca MCP server when connected for live data, otherwise
+relies on AI knowledge.`,
+		examples: []string{
+			"/stock AAPL",
+			"/stock TSLA",
+			"/stock NVDA",
+		},
+		seeAlso: []string{"screen", "connect"},
+	},
+	"screen": {
+		name:     "screen - stock screener",
+		synopsis: "/screen <filters>",
+		desc: `Screen stocks matching natural language criteria. The AI interprets
+your filters and returns matching stocks with ticker, price,
+and why they match.`,
+		examples: []string{
+			"/screen high dividend tech stocks under $50",
+			"/screen small cap biotech",
+			"/screen low P/E ratio energy stocks",
+		},
+		seeAlso: []string{"stock", "analyze"},
+	},
+	"odds": {
+		name:     "odds - betting odds lookup",
+		synopsis: "/odds <event>",
+		desc: `Find current betting odds for a sporting event or matchup. Shows
+moneyline, spread, and over/under from major sportsbooks.
+
+Uses brave-search MCP or web tools for live odds data.`,
+		examples: []string{
+			"/odds Lakers vs Celtics",
+			"/odds Super Bowl winner",
+			"/odds UFC 300 main event",
+		},
+		seeAlso: []string{"lines"},
+	},
+	"lines": {
+		name:     "lines - betting line movement",
+		synopsis: "/lines <event>",
+		desc: `Show line movement and betting line history for a sporting event.
+Highlights significant shifts in odds that may indicate sharp
+money movement.
+
+Uses brave-search MCP or web tools for historical line data.`,
+		examples: []string{
+			"/lines Super Bowl",
+			"/lines Lakers vs Celtics",
+		},
+		seeAlso: []string{"odds"},
+	},
+	"funding": {
+		name:     "funding - perpetual funding rates",
+		synopsis: "/funding [symbol]",
+		desc: `Show current funding rates for major perpetual futures contracts.
+Includes annualized rates and direction (longs paying shorts or
+vice versa). Useful for Hyperliquid and other perp DEX traders.`,
+		examples: []string{
+			"/funding",
+			"/funding BTC ETH",
+		},
+		seeAlso: []string{"connect", "balances"},
+	},
+	"memory": {
+		name:     "memory - AI memory management",
+		synopsis: "/memory [clear|remove <id>]",
+		desc: `View, clear, or manage NickAI's persistent memory. Memories are
+insights, preferences, and context that Nick remembers across
+sessions to provide more personalized responses.`,
+		examples: []string{
+			"/memory",
+			"/memory clear",
+			"/memory remove abc123",
+		},
+		seeAlso: []string{"config"},
+	},
+	"consensus": {
+		name:     "consensus - multi-LLM trading consensus",
+		synopsis: "/consensus [all|budget] <symbol>",
+		desc: `Query multiple frontier LLMs in parallel for a BUY/SELL/HOLD
+verdict on any asset. Models vote independently and the consensus
+is determined by agreement threshold (67%).
+
+Three tiers available:
+  Tier 1 (default): 4 frontier models
+  Tier 2 (all):     All 10 models across all tiers
+  Tier 3 (budget):  Free/near-free models only
+
+Requires an OpenRouter API key.`,
+		examples: []string{
+			"/consensus BTC",
+			"/consensus all ETH",
+			"/consensus budget SOL",
+			"/consensus models",
+		},
+		seeAlso: []string{"analyze", "price"},
+	},
 }
 
 // RenderManPage renders a unix-style manual page for the given command.
@@ -636,6 +840,18 @@ func RenderManPage(command string) string {
 		command = "strategy"
 	case "automation":
 		command = "auto"
+	case "bal":
+		command = "balances"
+	case "pos":
+		command = "positions"
+	case "mem":
+		command = "memory"
+	case "con":
+		command = "consensus"
+	case "bt":
+		command = "backtest"
+	case "pm":
+		command = "polymarket"
 	}
 
 	page, ok := manPages[command]
@@ -728,6 +944,21 @@ func RenderManIndex() string {
 		{"workflow", "Manage automation workflows"},
 		{"logs", "Workflow execution logs"},
 		{"watch", "Live price monitor"},
+		{"memory", "AI memory management"},
+		{"consensus", "Multi-LLM trading consensus"},
+		{"connect", "Connect an exchange"},
+		{"balances", "Unified balance view"},
+		{"positions", "Open positions view"},
+		{"markets", "Prediction market search"},
+		{"bet", "Place a prediction bet"},
+		{"wallet", "Onchain wallet operations"},
+		{"swap", "Token swap on DEX"},
+		{"gas", "Blockchain gas prices"},
+		{"stock", "Stock analysis"},
+		{"screen", "Stock screener"},
+		{"odds", "Betting odds lookup"},
+		{"lines", "Betting line movement"},
+		{"funding", "Perpetual funding rates"},
 		{"man", "Manual pages"},
 		{"clear", "Clear chat history"},
 		{"quit", "Exit NickAI"},

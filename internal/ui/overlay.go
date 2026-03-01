@@ -138,7 +138,8 @@ func compositeOverlay(base string, dialog string, screenW, screenH int) string {
 func renderHelpDialog(screenW, screenH int) string {
 	col1Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Navigation")
 	col2Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Trading")
-	col3Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Setup & Tools")
+	col3Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Tools & AI")
+	col4Header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Multi-Vertical")
 
 	dim := DimStyle.Render
 	key := func(k string) string {
@@ -152,12 +153,14 @@ func renderHelpDialog(screenW, screenH int) string {
 		key("i/a/o") + dim("   Insert mode"),
 		key(":") + dim("       Command mode"),
 		key("/") + dim("       Search mode"),
-		key("j/k") + dim("     Scroll up/down"),
-		key("d/u") + dim("     Half page ↓/↑"),
+		key("j/k") + dim("     Scroll ↑/↓"),
+		key("d/u") + dim("     Half page"),
 		key("gg/G") + dim("    Top / bottom"),
 		key("Tab") + dim("     Complete cmd"),
 		key("↑/↓") + dim("     History"),
-		key("q") + dim("       Quit"),
+		key("Ctrl+K") + dim("  Palette"),
+		key("Ctrl+T") + dim("  Theme"),
+		key("F1") + dim("      Help"),
 	}
 
 	col2 := []string{
@@ -167,41 +170,53 @@ func renderHelpDialog(screenW, screenH int) string {
 		key("/sell") + dim("      Limit sell"),
 		key("/price") + dim("     Price quotes"),
 		key("/watch") + dim("     Live dashboard"),
-		key("/chart") + dim("     Sparkline chart"),
+		key("/chart") + dim("     Sparkline"),
 		key("/alert") + dim("     Price alerts"),
 		key("/status") + dim("    Portfolio"),
 		key("/orders") + dim("    Recent trades"),
-		key("/pnl") + dim("       Profit & loss"),
+		key("/pnl") + dim("       P&L summary"),
 		key("/snapshot") + dim("  Full dashboard"),
+		key("/analyze") + dim("   Analysis"),
+		key("/backtest") + dim("  Backtest"),
 	}
 
 	col3 := []string{
 		col3Header,
 		"",
-		key("/analyze") + dim("     Market analysis"),
-		key("/backtest") + dim("    Backtest strategies"),
-		key("/polymarket") + dim("  Prediction markets"),
-		key("/analytics") + dim("   Portfolio analytics"),
-		key("/config") + dim("      Settings & API keys"),
-		key("/mcp") + dim("         MCP integrations"),
-		key("/credential") + dim("  Exchange API keys"),
-		key("/risk") + dim("        Risk guardrails"),
-		key("/guide") + dim("       Interactive guide"),
-		key("/memory") + dim("      AI memory"),
-		key("/consensus") + dim("  Multi-LLM consensus"),
-		"",
-		key("Ctrl+K") + dim("  Command palette"),
-		key("Ctrl+T") + dim("  Theme picker"),
-		key("Ctrl+O") + dim("  Model selector"),
-		key("F1") + dim("      Help (any mode)"),
-		key("/help") + dim("       All commands"),
+		key("/memory") + dim("     AI memory"),
+		key("/consensus") + dim("  LLM consensus"),
+		key("/polymarket") + dim(" Pred. markets"),
+		key("/analytics") + dim("  Analytics"),
+		key("/risk") + dim("       Guardrails"),
+		key("/auto") + dim("       Automation"),
+		key("/config") + dim("     Settings"),
+		key("/mcp") + dim("        MCP servers"),
+		key("/guide") + dim("      Guide"),
+		key("/man") + dim("        Manual"),
 	}
 
-	colWidth := 28
-	maxRows := max(len(col1), max(len(col2), len(col3)))
+	col4 := []string{
+		col4Header,
+		"",
+		key("/connect") + dim("   Exchanges"),
+		key("/balances") + dim("  All balances"),
+		key("/positions") + dim(" All positions"),
+		key("/markets") + dim("   Pred. markets"),
+		key("/stock") + dim("     Equities"),
+		key("/screen") + dim("    Screener"),
+		key("/wallet") + dim("    Onchain"),
+		key("/swap") + dim("      DEX swap"),
+		key("/gas") + dim("       Gas prices"),
+		key("/odds") + dim("      Betting odds"),
+		key("/lines") + dim("     Line moves"),
+		key("/funding") + dim("   Funding rates"),
+	}
+
+	colWidth := 24
+	maxRows := max(len(col1), max(len(col2), max(len(col3), len(col4))))
 	var rows []string
 	for i := 0; i < maxRows; i++ {
-		c1, c2, c3 := "", "", ""
+		c1, c2, c3, c4 := "", "", "", ""
 		if i < len(col1) {
 			c1 = col1[i]
 		}
@@ -211,19 +226,23 @@ func renderHelpDialog(screenW, screenH int) string {
 		if i < len(col3) {
 			c3 = col3[i]
 		}
+		if i < len(col4) {
+			c4 = col4[i]
+		}
 
-		c1Styled := lipgloss.NewStyle().Width(colWidth).Render(c1)
-		c2Styled := lipgloss.NewStyle().Width(colWidth).Render(c2)
-		c3Styled := lipgloss.NewStyle().Width(colWidth).Render(c3)
+		c1s := lipgloss.NewStyle().Width(colWidth).Render(c1)
+		c2s := lipgloss.NewStyle().Width(colWidth).Render(c2)
+		c3s := lipgloss.NewStyle().Width(colWidth).Render(c3)
+		c4s := lipgloss.NewStyle().Width(colWidth).Render(c4)
 
-		rows = append(rows, c1Styled+"  "+c2Styled+"  "+c3Styled)
+		rows = append(rows, c1s+" "+c2s+" "+c3s+" "+c4s)
 	}
 
-	footer := "\n" + DimStyle.Render("Press any key to close")
+	footer := "\n" + DimStyle.Render("Press any key to close  •  /help for full list")
 
 	content := strings.Join(rows, "\n") + footer
 
-	dialogW := min(screenW-4, 92)
+	dialogW := min(screenW-4, 104)
 	dialogH := maxRows + 6
 	return overlayFrame("Help", content, dialogW, dialogH, screenW, screenH)
 }
@@ -443,6 +462,21 @@ var paletteCommands = []string{
 	"/auto list|View automation rules",
 	"/auto pause|Pause an automation rule",
 	"/auto remove|Remove an automation rule",
+	// Multi-vertical commands.
+	"/connect|Connect an exchange",
+	"/connect list|Show connected exchanges",
+	"/balances|Unified balance view",
+	"/positions|Open positions across exchanges",
+	"/markets|Trending prediction markets",
+	"/bet|Place a prediction market bet",
+	"/wallet balance|Check wallet balances",
+	"/swap|Token swap (DEX)",
+	"/gas|Gas price estimates",
+	"/stock|Stock analysis",
+	"/screen|Stock screener",
+	"/odds|Betting odds lookup",
+	"/lines|Line movement tracker",
+	"/funding|Perpetual funding rates",
 	"/config|Manage settings",
 	"/config init|Create account & API key",
 	"/man|Manual pages",

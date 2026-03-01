@@ -66,6 +66,10 @@ var knownCommands = []string{
 	"/risk", "/strategy", "/notify", "/analytics", "/analyze", "/auto",
 	"/backtest", "/bt", "/polymarket", "/pm", "/guide",
 	"/memory", "/mem", "/consensus", "/con",
+	// Multi-vertical commands.
+	"/connect", "/balances", "/bal", "/positions", "/pos",
+	"/markets", "/bet", "/wallet", "/swap", "/gas",
+	"/stock", "/screen", "/odds", "/lines", "/funding",
 }
 
 var knownSymbols = []string{
@@ -76,6 +80,7 @@ var symbolCommands = map[string]bool{
 	"/price": true, "/buy": true, "/sell": true,
 	"/watch": true, "/chart": true, "/alert": true,
 	"/trigger": true, "/analyze": true, "/backtest": true,
+	"/consensus": true, "/stock": true, "/funding": true,
 }
 
 // editorFinishedMsg is sent when an external editor process completes.
@@ -1298,6 +1303,152 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		case commands.TypeConsensus:
 			output, cmd := m.handleConsensus(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeConnect:
+			output := m.handleConnect(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			return m, nil
+
+		case commands.TypeBalances:
+			m.loading = true
+			m.loadingFrame = 0
+			m.loadingText = "Fetching balances..."
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+			m.updateViewport()
+			client := m.client
+			return m, tea.Batch(
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					return apiResponseMsg{content: RenderBalances(client)}
+				},
+			)
+
+		case commands.TypePositions:
+			m.loading = true
+			m.loadingFrame = 0
+			m.loadingText = "Fetching positions..."
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+			m.updateViewport()
+			client := m.client
+			return m, tea.Batch(
+				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+				func() tea.Msg {
+					return apiResponseMsg{content: RenderPositions(client)}
+				},
+			)
+
+		case commands.TypeMarkets:
+			output, cmd := m.handleMarkets(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeBet:
+			output, cmd := m.handleBet(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeWallet:
+			output, cmd := m.handleWallet(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeSwap:
+			output, cmd := m.handleSwap(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeGas:
+			output, cmd := m.handleGas(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeStock:
+			output, cmd := m.handleStock(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeScreen:
+			output, cmd := m.handleScreen(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeOdds:
+			output, cmd := m.handleOdds(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeLines:
+			output, cmd := m.handleLines(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeFunding:
+			output, cmd := m.handleFunding(result.Args)
 			if output != "" {
 				m.addBotMessage(output)
 			}
@@ -3144,6 +3295,242 @@ func computeIndicatorSnapshot(closePrices []float64) automation.IndicatorSnapsho
 	return snap
 }
 
+// --- Multi-vertical command handlers ---
+
+// exchangeMap maps common exchange names to MCP server names.
+var exchangeMap = map[string]string{
+	"binance":     "binance",
+	"coinbase":    "ccxt",
+	"hyperliquid": "ccxt",
+	"kraken":      "ccxt",
+	"bybit":       "ccxt",
+	"alpaca":      "alpaca",
+}
+
+func (m *Model) handleConnect(args []string) string {
+	if len(args) == 0 {
+		return RenderConnectHelp()
+	}
+
+	sub := strings.ToLower(args[0])
+	if sub == "list" {
+		if m.mcpManager == nil || m.mcpManager.ConnectionCount() == 0 {
+			return BotMsgStyle.Render("nick: ") + "No exchanges connected." + "\n" +
+				DimStyle.Render("  Run /connect to see available exchanges.")
+		}
+		var rows []string
+		rows = append(rows, BotMsgStyle.Render("nick: ")+"Connected exchanges:")
+		for _, c := range m.mcpManager.Connections() {
+			rows = append(rows, "  "+lipgloss.NewStyle().Foreground(ColorPrimary).Render("●")+" "+c.Name+
+				DimStyle.Render(fmt.Sprintf(" (%d tools)", len(c.Tools))))
+		}
+		return strings.Join(rows, "\n")
+	}
+
+	// Map exchange name to MCP server.
+	serverName, ok := exchangeMap[sub]
+	if !ok {
+		return ErrorStyle.Render("  Unknown exchange: ") + sub + "\n" +
+			DimStyle.Render("  Available: binance, coinbase, hyperliquid, kraken, bybit, alpaca")
+	}
+	return BotMsgStyle.Render("nick: ") + "To connect " + sub + ", run:\n" +
+		"  " + CommandStyle.Render("/mcp add "+serverName) + "\n" +
+		DimStyle.Render("  This installs the MCP server for "+sub+".")
+}
+
+func (m *Model) handleMarkets(args []string) (string, tea.Cmd) {
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key for market search. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+
+	prompt := "Show trending prediction markets with highest volume. Use available polymarket or prediction market tools."
+	if len(args) > 0 {
+		prompt = "Search prediction markets for: " + strings.Join(args, " ")
+	}
+
+	return m.streamToAI(prompt, "Searching markets...")
+}
+
+func (m *Model) handleBet(args []string) (string, tea.Cmd) {
+	if len(args) < 3 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/bet <market> <yes|no> <amount>") + "\n" +
+			DimStyle.Render("  Example: /bet \"Trump wins\" yes 50"), nil
+	}
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+	prompt := fmt.Sprintf("Place a prediction market bet: market=%s, side=%s, amount=$%s. Use the polymarket tools to execute.",
+		args[0], args[1], args[2])
+	return m.streamToAI(prompt, "Placing bet...")
+}
+
+func (m *Model) handleWallet(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return RenderWalletHelp(), nil
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "balance", "bal":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/wallet balance <address>"), nil
+		}
+		if m.agent == nil {
+			return BotMsgStyle.Render("nick: ") +
+				"I need an Anthropic API key. Set one with " +
+				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		}
+		prompt := "Check the wallet balance for address: " + args[1] + ". Use onchain/web3 MCP tools if available."
+		return m.streamToAI(prompt, "Checking wallet...")
+
+	default:
+		if m.agent == nil {
+			return BotMsgStyle.Render("nick: ") +
+				"I need an Anthropic API key. Set one with " +
+				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		}
+		prompt := "Wallet command: " + strings.Join(args, " ")
+		return m.streamToAI(prompt, "Processing wallet request...")
+	}
+}
+
+func (m *Model) handleSwap(args []string) (string, tea.Cmd) {
+	if len(args) < 3 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/swap <from> <to> <amount>") + "\n" +
+			DimStyle.Render("  Example: /swap SOL USDC 10"), nil
+	}
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+
+	from := strings.ToUpper(args[0])
+	to := strings.ToUpper(args[1])
+	amount := args[2]
+	prompt := fmt.Sprintf("Swap %s %s to %s using Jupiter (Solana) or LiFi (cross-chain) MCP servers. Confirm before executing.", amount, from, to)
+	return m.streamToAI(prompt, fmt.Sprintf("Swapping %s %s → %s...", amount, from, to))
+}
+
+func (m *Model) handleGas(args []string) (string, tea.Cmd) {
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+	chain := "ethereum"
+	if len(args) > 0 {
+		chain = strings.ToLower(args[0])
+	}
+	prompt := fmt.Sprintf("Fetch current gas prices for %s. Show fast, standard, and slow estimates. Use onchain MCP tools if available.", chain)
+	return m.streamToAI(prompt, "Fetching gas prices...")
+}
+
+func (m *Model) handleStock(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/stock <ticker>") + "\n" +
+			DimStyle.Render("  Example: /stock AAPL"), nil
+	}
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+	ticker := strings.ToUpper(args[0])
+	prompt := fmt.Sprintf("Analyze stock %s — current price, key fundamentals (P/E, market cap, revenue), and recent news. Use Alpaca MCP if connected, otherwise use your knowledge.", ticker)
+	return m.streamToAI(prompt, "Analyzing "+ticker+"...")
+}
+
+func (m *Model) handleScreen(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/screen <filters>") + "\n" +
+			DimStyle.Render("  Example: /screen high dividend tech stocks under $50"), nil
+	}
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+	prompt := "Screen stocks matching these criteria: " + strings.Join(args, " ") + ". List top 10 matches with ticker, price, and why they match."
+	return m.streamToAI(prompt, "Screening stocks...")
+}
+
+func (m *Model) handleOdds(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/odds <event>") + "\n" +
+			DimStyle.Render("  Example: /odds Lakers vs Celtics"), nil
+	}
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+	prompt := "Find current betting odds for: " + strings.Join(args, " ") + ". Show moneyline, spread, and over/under from major sportsbooks. Use brave-search MCP or web tools if available."
+	return m.streamToAI(prompt, "Finding odds...")
+}
+
+func (m *Model) handleLines(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return ErrorStyle.Render("  Usage: ") +
+			CommandStyle.Render("/lines <event>") + "\n" +
+			DimStyle.Render("  Example: /lines Super Bowl"), nil
+	}
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+	prompt := "Show line movement and betting line history for: " + strings.Join(args, " ") + ". Highlight any significant shifts. Use brave-search MCP or web tools if available."
+	return m.streamToAI(prompt, "Checking line movement...")
+}
+
+func (m *Model) handleFunding(args []string) (string, tea.Cmd) {
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+	prompt := "Show current funding rates for major perpetual contracts (BTC, ETH, SOL, and any other notable rates). Include annualized rates and direction. Use exchange MCP tools if available."
+	if len(args) > 0 {
+		prompt = "Show funding rates for: " + strings.Join(args, " ")
+	}
+	return m.streamToAI(prompt, "Fetching funding rates...")
+}
+
+// streamToAI is a helper that sends a prompt to the AI agent with streaming.
+func (m *Model) streamToAI(prompt, loadingText string) (string, tea.Cmd) {
+	m.loading = true
+	m.streaming = true
+	m.loadingFrame = 0
+	m.loadingText = loadingText
+	m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+
+	tokenCh := make(chan string, 100)
+	m.streamCh = tokenCh
+	agent := m.agent
+	confirmCh := m.toolRegistry.ConfirmCh
+	return "", tea.Batch(
+		tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			defer close(tokenCh)
+			resp, err := agent.ChatStream(prompt, tokenCh)
+			return aiStreamDoneMsg{finalContent: resp, err: err}
+		},
+		waitForStreamToken(tokenCh),
+		waitForConfirmation(confirmCh),
+	)
+}
+
 // --- Helper: streaming ---
 
 // waitForStreamToken returns a tea.Cmd that reads the next token from a
@@ -3268,8 +3655,11 @@ func (m *Model) renderResult(r commands.Result) string {
 		return RenderWatch(m.client, symbols, m.width)
 
 	case commands.TypeUnknown:
-		return ErrorStyle.Render("Unknown command: ") + r.Input + "\n" +
-			DimStyle.Render("Type /help for available commands.")
+		hint := DimStyle.Render("Type /help for available commands.")
+		if len(r.Args) > 0 && strings.HasPrefix(r.Args[0], "Did you mean") {
+			hint = lipgloss.NewStyle().Foreground(ColorWarning).Render(r.Args[0])
+		}
+		return ErrorStyle.Render("Unknown command: ") + r.Input + "\n" + hint
 
 	case commands.TypeChart:
 		if !m.client.IsConfigured() {

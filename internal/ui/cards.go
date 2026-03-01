@@ -1326,6 +1326,35 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/guide", "Interactive guide"))
 	lines = append(lines, cmdLine("/logs <workflow>", "Workflow execution logs"))
 
+	lines = append(lines, sectionHeader("Prediction Markets"))
+	lines = append(lines, cmdLine("/markets", "Trending prediction markets"))
+	lines = append(lines, cmdLine("/markets <query>", "Search markets"))
+	lines = append(lines, cmdLine("/bet <market> <side> <amt>", "Place a prediction bet"))
+	lines = append(lines, cmdLine("/positions", "Unified positions view"))
+
+	lines = append(lines, sectionHeader("Exchange"))
+	lines = append(lines, cmdLine("/connect <exchange>", "Connect an exchange"))
+	lines = append(lines, cmdLine("/connect list", "Show connected exchanges"))
+	lines = append(lines, cmdLine("/balances", "Unified balance view"))
+	lines = append(lines, cmdLine("/funding", "Perpetual funding rates"))
+
+	lines = append(lines, sectionHeader("Onchain"))
+	lines = append(lines, cmdLine("/wallet balance <addr>", "Check wallet balances"))
+	lines = append(lines, cmdLine("/swap SOL USDC 10", "Token swap (DEX)"))
+	lines = append(lines, cmdLine("/gas", "Gas price estimates"))
+
+	lines = append(lines, sectionHeader("Stocks"))
+	lines = append(lines, cmdLine("/stock AAPL", "Stock analysis"))
+	lines = append(lines, cmdLine("/screen <filters>", "Stock screener"))
+
+	lines = append(lines, sectionHeader("Betting"))
+	lines = append(lines, cmdLine("/odds Lakers vs Celtics", "Betting odds lookup"))
+	lines = append(lines, cmdLine("/lines Super Bowl", "Line movement tracker"))
+
+	lines = append(lines, sectionHeader("AI & Memory"))
+	lines = append(lines, cmdLine("/memory", "View saved memories"))
+	lines = append(lines, cmdLine("/consensus BTC", "Multi-LLM consensus"))
+
 	lines = append(lines, sectionHeader("Setup & Integrations"))
 	lines = append(lines, cmdLine("/config init", "Create account & API key"))
 	lines = append(lines, cmdLine("/config", "Manage settings & keys"))
@@ -2077,9 +2106,17 @@ func RenderGuideCard(section string) string {
 		return renderGuideRisk()
 	case "polymarket":
 		return renderGuidePolymarket()
+	case "connect":
+		return renderGuideConnect()
+	case "onchain":
+		return renderGuideOnchain()
+	case "stocks":
+		return renderGuideStocks()
+	case "betting":
+		return renderGuideBetting()
 	default:
 		return ErrorStyle.Render("  Unknown guide section: ") + section + "\n" +
-			DimStyle.Render("  Available: start, trading, analysis, backtest, ai, mcp, risk, polymarket")
+			DimStyle.Render("  Available: start, trading, analysis, backtest, ai, mcp, risk, polymarket, connect, onchain, stocks, betting")
 	}
 }
 
@@ -2094,6 +2131,10 @@ func renderGuideStart() string {
 		"  " + CommandStyle.Render("/guide backtest") + DimStyle.Render("     — backtesting strategies"),
 		"  " + CommandStyle.Render("/guide ai") + DimStyle.Render("           — talking to Nick effectively"),
 		"  " + CommandStyle.Render("/guide mcp") + DimStyle.Render("          — connecting external tools"),
+		"  " + CommandStyle.Render("/guide connect") + DimStyle.Render("      — connecting exchanges"),
+		"  " + CommandStyle.Render("/guide onchain") + DimStyle.Render("      — wallet + DeFi commands"),
+		"  " + CommandStyle.Render("/guide stocks") + DimStyle.Render("       — equities commands"),
+		"  " + CommandStyle.Render("/guide betting") + DimStyle.Render("      — sports betting commands"),
 		"  " + CommandStyle.Render("/guide risk") + DimStyle.Render("         — setting up guardrails"),
 		"  " + CommandStyle.Render("/guide polymarket") + DimStyle.Render("   — prediction market analysis"),
 		"",
@@ -2222,6 +2263,70 @@ func renderGuidePolymarket() string {
 		"  " + CommandStyle.Render("/mcp add brave-search"),
 		"",
 		DimStyle.Render("  That's the guide! Type anything to start trading."),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideConnect() string {
+	lines := []string{
+		SecondaryStyle.Render("  Connecting Exchanges\n"),
+		DimStyle.Render("  NickAI connects to exchanges via MCP servers:\n"),
+		"  " + CommandStyle.Render("/connect binance") + DimStyle.Render("    — connect Binance"),
+		"  " + CommandStyle.Render("/connect coinbase") + DimStyle.Render("   — connect Coinbase (via CCXT)"),
+		"  " + CommandStyle.Render("/connect alpaca") + DimStyle.Render("     — connect Alpaca (stocks)"),
+		"  " + CommandStyle.Render("/connect list") + DimStyle.Render("       — view connections"),
+		"",
+		"  " + CommandStyle.Render("/balances") + DimStyle.Render("            — unified balance view"),
+		"  " + CommandStyle.Render("/positions") + DimStyle.Render("           — positions across all exchanges"),
+		"  " + CommandStyle.Render("/funding") + DimStyle.Render("             — perpetual funding rates"),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide onchain"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideOnchain() string {
+	lines := []string{
+		SecondaryStyle.Render("  Onchain / DeFi Commands\n"),
+		DimStyle.Render("  Interact with wallets and DeFi protocols:\n"),
+		"  " + CommandStyle.Render("/wallet balance <addr>") + DimStyle.Render("  — check token balances"),
+		"  " + CommandStyle.Render("/swap SOL USDC 10") + DimStyle.Render("      — swap on DEX (Jupiter/LiFi)"),
+		"  " + CommandStyle.Render("/gas") + DimStyle.Render("                    — gas price estimates"),
+		"",
+		DimStyle.Render("  Requires MCP servers:"),
+		"  " + CommandStyle.Render("/mcp add web3") + DimStyle.Render("   or   ") + CommandStyle.Render("/mcp add jupiter"),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide stocks"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideStocks() string {
+	lines := []string{
+		SecondaryStyle.Render("  Stocks & Equities\n"),
+		DimStyle.Render("  Analyze and screen stocks:\n"),
+		"  " + CommandStyle.Render("/stock AAPL") + DimStyle.Render("          — full stock analysis"),
+		"  " + CommandStyle.Render("/screen tech < $50") + DimStyle.Render("   — stock screener"),
+		"",
+		DimStyle.Render("  For live data, connect Alpaca:"),
+		"  " + CommandStyle.Render("/connect alpaca"),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide betting"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideBetting() string {
+	lines := []string{
+		SecondaryStyle.Render("  Sports Betting\n"),
+		DimStyle.Render("  Find odds and track lines:\n"),
+		"  " + CommandStyle.Render("/odds Lakers vs Celtics") + DimStyle.Render("  — moneyline, spread, O/U"),
+		"  " + CommandStyle.Render("/lines Super Bowl") + DimStyle.Render("        — line movement history"),
+		"",
+		DimStyle.Render("  Uses brave-search MCP for odds data:"),
+		"  " + CommandStyle.Render("/mcp add brave-search"),
+		"",
+		DimStyle.Render("  That covers all verticals! Type anything to start."),
 	}
 	return strings.Join(lines, "\n")
 }
@@ -2391,3 +2496,112 @@ func RenderConsensusHelp() string {
 		"",
 	}, "\n")
 }
+
+// RenderConnectHelp renders the /connect command help.
+func RenderConnectHelp() string {
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Exchange Connectivity")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	return strings.Join([]string{
+		"", header, divider, "",
+		"  " + CommandStyle.Render("/connect <exchange>") + DimStyle.Render("   Connect an exchange via MCP"),
+		"  " + CommandStyle.Render("/connect list") + DimStyle.Render("         Show connected exchanges"),
+		"",
+		lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("  Available exchanges:"),
+		"  " + DimStyle.Render("binance, coinbase, hyperliquid, kraken, bybit, alpaca"),
+		"",
+		DimStyle.Render("  Example: /connect binance"),
+		"",
+	}, "\n")
+}
+
+// RenderWalletHelp renders the /wallet command help.
+func RenderWalletHelp() string {
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Onchain Wallet")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	return strings.Join([]string{
+		"", header, divider, "",
+		"  " + CommandStyle.Render("/wallet balance <address>") + DimStyle.Render("  Check token balances"),
+		"",
+		DimStyle.Render("  Requires onchain/web3 MCP server:"),
+		"  " + CommandStyle.Render("/mcp add web3"),
+		"",
+	}, "\n")
+}
+
+// RenderBalances renders a unified balance view across paper trading and exchanges.
+func RenderBalances(client *api.PapernickClient) string {
+	if !client.IsConfigured() {
+		return BotMsgStyle.Render("nick: ") +
+			"Connect a paper trading account first with " +
+			CommandStyle.Render("/config init")
+	}
+
+	portfolio, err := client.GetPortfolio()
+	if err != nil {
+		return ErrorStyle.Render("  Failed to fetch portfolio: ") + err.Error()
+	}
+
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Unified Balances")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	var rows []string
+	rows = append(rows, "", header, divider, "")
+
+	// Paper trading.
+	rows = append(rows, lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("  PaperNick"))
+	rows = append(rows, fmt.Sprintf("    Cash:        $%s", formatMoney(portfolio.Cash)))
+	rows = append(rows, fmt.Sprintf("    Available:   $%s", formatMoney(portfolio.AvailableCash)))
+	rows = append(rows, fmt.Sprintf("    Total Value: $%s", formatMoney(portfolio.TotalValue)))
+
+	rows = append(rows, "")
+	rows = append(rows, DimStyle.Render("  Connect exchanges for more: ")+CommandStyle.Render("/connect"))
+	rows = append(rows, "")
+
+	return strings.Join(rows, "\n")
+}
+
+// RenderPositions renders a unified positions view.
+func RenderPositions(client *api.PapernickClient) string {
+	if !client.IsConfigured() {
+		return BotMsgStyle.Render("nick: ") +
+			"Connect a paper trading account first with " +
+			CommandStyle.Render("/config init")
+	}
+
+	portfolio, err := client.GetPortfolio()
+	if err != nil {
+		return ErrorStyle.Render("  Failed to fetch portfolio: ") + err.Error()
+	}
+
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Open Positions")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	var rows []string
+	rows = append(rows, "", header, divider, "")
+
+	if len(portfolio.Assets) == 0 {
+		rows = append(rows, DimStyle.Render("  No open positions."))
+	} else {
+		for _, pos := range portfolio.Assets {
+			symbol := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
+				Render(fmt.Sprintf("  %-12s", pos.Symbol))
+			qty := fmt.Sprintf("%.6f", pos.Quantity)
+			val := fmt.Sprintf("$%s", formatMoney(pos.Value))
+			rows = append(rows, symbol+DimStyle.Render(qty)+"  "+val)
+		}
+	}
+
+	rows = append(rows, "")
+	return strings.Join(rows, "\n")
+}
+
