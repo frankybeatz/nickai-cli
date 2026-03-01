@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/nickai/cli/internal/ai"
 	"github.com/nickai/cli/internal/analytics"
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/automation"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
 	"github.com/nickai/cli/internal/backtest"
+	"github.com/nickai/cli/internal/memory"
 	"github.com/nickai/cli/internal/indicators"
 	"github.com/nickai/cli/internal/journal"
 	"github.com/nickai/cli/internal/market"
@@ -2222,4 +2224,170 @@ func renderGuidePolymarket() string {
 		DimStyle.Render("  That's the guide! Type anything to start trading."),
 	}
 	return strings.Join(lines, "\n")
+}
+
+// RenderMemoryList renders saved memories as a styled card.
+func RenderMemoryList(entries []memory.Entry) string {
+	if len(entries) == 0 {
+		return BotMsgStyle.Render("nick: ") + "No memories saved yet."
+	}
+
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Saved Memories")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	var rows []string
+	rows = append(rows, "", header, divider, "")
+
+	for _, e := range entries {
+		typeTag := lipgloss.NewStyle().Foreground(ColorSecondary).Render(fmt.Sprintf("[%s]", e.Type))
+		date := DimStyle.Render(e.CreatedAt.Format("2006-01-02"))
+		idHint := DimStyle.Render("(" + e.ID[:6] + ")")
+		content := lipgloss.NewStyle().Foreground(ColorWhite).Render(e.Content)
+		rows = append(rows, fmt.Sprintf("  %s %s %s %s", typeTag, content, date, idHint))
+		if len(e.Tags) > 0 {
+			rows = append(rows, "    "+DimStyle.Render("tags: "+strings.Join(e.Tags, ", ")))
+		}
+	}
+
+	rows = append(rows, "", DimStyle.Render("  /memory clear to reset  •  /memory remove <id> to delete one"))
+	return strings.Join(rows, "\n")
+}
+
+// RenderConsensusCard renders the multi-LLM consensus result.
+func RenderConsensusCard(result *ai.ConsensusResult) string {
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render(fmt.Sprintf("  Multi-Model Consensus: %s @ $%.2f", result.Symbol, result.Price))
+	divider := DimStyle.Render("  " + strings.Repeat("─", 60))
+
+	var rows []string
+	rows = append(rows, "", header, divider, "")
+
+	// Table header.
+	thModel := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(fmt.Sprintf("  %-38s", "Model"))
+	thVerdict := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(fmt.Sprintf("%-8s", "Verdict"))
+	thConf := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(fmt.Sprintf("%-10s", "Confidence"))
+	thTime := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("Time")
+	rows = append(rows, thModel+thVerdict+thConf+thTime)
+	rows = append(rows, DimStyle.Render("  "+strings.Repeat("─", 70)))
+
+	for _, v := range result.Verdicts {
+		model := fmt.Sprintf("  %-38s", v.Model)
+		var verdictStyled string
+		switch v.Verdict {
+		case "BUY":
+			verdictStyled = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(fmt.Sprintf("%-8s", "BUY"))
+		case "SELL":
+			verdictStyled = lipgloss.NewStyle().Foreground(ColorError).Bold(true).Render(fmt.Sprintf("%-8s", "SELL"))
+		case "HOLD":
+			verdictStyled = lipgloss.NewStyle().Foreground(ColorWarning).Bold(true).Render(fmt.Sprintf("%-8s", "HOLD"))
+		default:
+			if v.Error != "" {
+				verdictStyled = ErrorStyle.Render(fmt.Sprintf("%-8s", "ERROR"))
+			} else {
+				verdictStyled = DimStyle.Render(fmt.Sprintf("%-8s", "—"))
+			}
+		}
+		conf := fmt.Sprintf("%-10s", v.Confidence)
+		dur := fmt.Sprintf("%.1fs", v.Duration.Seconds())
+		rows = append(rows, model+verdictStyled+conf+dur)
+		if v.Reasoning != "" {
+			rows = append(rows, "    "+DimStyle.Render(v.Reasoning))
+		}
+		if v.Error != "" {
+			rows = append(rows, "    "+ErrorStyle.Render(v.Error))
+		}
+	}
+
+	rows = append(rows, DimStyle.Render("  "+strings.Repeat("─", 70)))
+
+	// Consensus summary.
+	var consensusStyled string
+	switch result.Consensus {
+	case "BUY":
+		consensusStyled = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("BUY")
+	case "SELL":
+		consensusStyled = lipgloss.NewStyle().Foreground(ColorError).Bold(true).Render("SELL")
+	case "HOLD":
+		consensusStyled = lipgloss.NewStyle().Foreground(ColorWarning).Bold(true).Render("HOLD")
+	default:
+		consensusStyled = DimStyle.Render("NO CONSENSUS")
+	}
+
+	rows = append(rows, fmt.Sprintf("  Consensus: %s  (%s agree)", consensusStyled, result.Agreement))
+	rows = append(rows, "")
+
+	return strings.Join(rows, "\n")
+}
+
+// RenderAnalysisPresets renders available analysis presets.
+func RenderAnalysisPresets() string {
+	presets := backtest.GetAnalysisPresets()
+
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Analysis Presets")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	var rows []string
+	rows = append(rows, "", header, divider, "")
+
+	for _, p := range presets {
+		name := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(fmt.Sprintf("  %-20s", p.Name))
+		desc := lipgloss.NewStyle().Foreground(ColorWhite).Render(p.Description)
+		rows = append(rows, name+desc)
+		if len(p.MCPTools) > 0 {
+			rows = append(rows, "    "+DimStyle.Render("requires: "+strings.Join(p.MCPTools, ", ")))
+		}
+	}
+
+	rows = append(rows, "")
+	rows = append(rows, DimStyle.Render("  Run: /analyze run <preset> [args]"))
+	rows = append(rows, DimStyle.Render("  Shortcuts: /analyze sentiment <symbol>  •  /analyze whale <symbol>  •  /analyze defi"))
+	rows = append(rows, "")
+
+	return strings.Join(rows, "\n")
+}
+
+// RenderAnalyzeHelp renders the /analyze command help.
+func RenderAnalyzeHelp() string {
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Market Analysis")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	return strings.Join([]string{
+		"", header, divider, "",
+		"  " + CommandStyle.Render("/analyze <symbol>") + DimStyle.Render("         Technical analysis"),
+		"  " + CommandStyle.Render("/analyze presets") + DimStyle.Render("          List analysis presets"),
+		"  " + CommandStyle.Render("/analyze run <preset> [args]") + DimStyle.Render("  Run a preset"),
+		"  " + CommandStyle.Render("/analyze sentiment <symbol>") + DimStyle.Render("  News/social sentiment"),
+		"  " + CommandStyle.Render("/analyze whale <symbol>") + DimStyle.Render("      On-chain whale activity"),
+		"  " + CommandStyle.Render("/analyze defi") + DimStyle.Render("              Top DeFi yields"),
+		"",
+		DimStyle.Render("  Example: /analyze run sentiment-check BTC"),
+		"",
+	}, "\n")
+}
+
+// RenderConsensusHelp renders the /consensus command help.
+func RenderConsensusHelp() string {
+	header := lipgloss.NewStyle().
+		Foreground(ColorPrimary).Bold(true).
+		Render("  Multi-LLM Consensus")
+	divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+
+	return strings.Join([]string{
+		"", header, divider, "",
+		"  " + CommandStyle.Render("/consensus <symbol>") + DimStyle.Render("       Tier 1 frontier panel (4 models)"),
+		"  " + CommandStyle.Render("/consensus all <symbol>") + DimStyle.Render("   All tiers (10 models)"),
+		"  " + CommandStyle.Render("/consensus budget <symbol>") + DimStyle.Render("  Tier 3 free models only"),
+		"  " + CommandStyle.Render("/consensus models") + DimStyle.Render("         Show model tiers"),
+		"",
+		DimStyle.Render("  Requires OpenRouter API key:"),
+		"  " + CommandStyle.Render("/config set openrouter_key <key>"),
+		"",
+	}, "\n")
 }

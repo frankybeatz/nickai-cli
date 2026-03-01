@@ -44,6 +44,8 @@ const (
 	TypeBacktest
 	TypePolymarket
 	TypeGuide
+	TypeMemory
+	TypeConsensus
 	TypeUnknown
 )
 
@@ -142,6 +144,10 @@ func Route(input string) Result {
 		return Result{Type: TypePolymarket, Input: trimmed, Args: args, IsCommand: true}
 	case "/guide":
 		return Result{Type: TypeGuide, Input: trimmed, Args: args, IsCommand: true}
+	case "/memory", "/mem":
+		return Result{Type: TypeMemory, Input: trimmed, Args: args, IsCommand: true}
+	case "/consensus", "/con":
+		return Result{Type: TypeConsensus, Input: trimmed, Args: args, IsCommand: true}
 	default:
 		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
 	}

@@ -79,7 +79,9 @@ When the user asks about Polymarket or prediction markets, use available MCP too
 2. Search for relevant news and context
 3. Compare implied probability (market odds) vs your assessed probability
 4. Flag contracts where the gap is largest (potential mispricing)
-Always note that prediction markets carry risk and past event analysis doesn't guarantee outcomes.`
+Always note that prediction markets carry risk and past event analysis doesn't guarantee outcomes.
+
+When the user shares preferences (risk tolerance, favorite symbols, position sizes) or when you observe patterns in their trading, use save_memory to remember for future sessions. Use recall_memory to search past context. After showing backtest results, offer to activate the strategy as a live monitoring rule using the activate_strategy tool.`
 
 // mcpRegistryHint lists MCP servers the user can install for extra capabilities.
 const mcpRegistryHint = `
@@ -200,6 +202,9 @@ type Agent struct {
 
 	// Automation prompt suffix injected when automations exist.
 	autoPromptSuffix string
+
+	// Memory prompt suffix injected when memories exist.
+	memoryPromptSuffix string
 }
 
 // NewAgent creates an agent with the given PaperNick client, Anthropic API key,
@@ -285,6 +290,11 @@ func (a *Agent) SetAutoInfo(info string) {
 	a.autoPromptSuffix = info
 }
 
+// SetMemoryInfo sets a memory context suffix for the system prompt.
+func (a *Agent) SetMemoryInfo(info string) {
+	a.memoryPromptSuffix = info
+}
+
 // effectivePrompt returns the system prompt with any dynamic suffixes.
 func (a *Agent) effectivePrompt() string {
 	p := a.systemPrompt
@@ -293,6 +303,9 @@ func (a *Agent) effectivePrompt() string {
 	}
 	if a.autoPromptSuffix != "" {
 		p += "\n\n" + a.autoPromptSuffix
+	}
+	if a.memoryPromptSuffix != "" {
+		p += "\n\n" + a.memoryPromptSuffix
 	}
 	return p
 }

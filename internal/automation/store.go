@@ -17,6 +17,7 @@ const (
 	RuleSchedule  RuleType = "schedule"
 	RuleCondition RuleType = "condition"
 	RulePortfolio RuleType = "portfolio"
+	RuleIndicator RuleType = "indicator"
 )
 
 // AutoRule is a single automation rule.
@@ -38,6 +39,12 @@ type AutoRule struct {
 	MetricName string  `json:"metric_name,omitempty"`
 	Threshold  float64 `json:"threshold,omitempty"`
 
+	// Indicator-based conditions (from backtest strategy activation).
+	IndicatorConditions []IndicatorCondition `json:"indicator_conditions,omitempty"`
+
+	// Source strategy name (if activated from a backtest).
+	SourceStrategy string `json:"source_strategy,omitempty"`
+
 	// Action fields.
 	Action       string  `json:"action"`
 	ActionSymbol string  `json:"action_symbol"`
@@ -51,6 +58,28 @@ type AutoRule struct {
 	MaxFires  int       `json:"max_fires,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	NextCheck time.Time `json:"next_check,omitempty"`
+}
+
+// IndicatorCondition is a single indicator-based rule for live strategy monitoring.
+type IndicatorCondition struct {
+	Indicator string  `json:"indicator"` // rsi, macd, macd_histogram, etc.
+	Operator  string  `json:"operator"`  // <, >, crosses_above, crosses_below
+	Value     float64 `json:"value"`
+}
+
+// IndicatorSnapshot holds computed indicator values for a symbol.
+type IndicatorSnapshot struct {
+	RSI            float64
+	MACD           float64
+	MACDSignal     float64
+	MACDHistogram  float64
+	BollingerUpper float64
+	BollingerLower float64
+	SMA20          float64
+	SMA50          float64
+	EMA12          float64
+	EMA26          float64
+	Price          float64
 }
 
 func storePath() (string, error) {
@@ -249,4 +278,68 @@ func ParseSchedule(s string) (int, error) {
 	}
 
 	return 0, fmt.Errorf("unrecognized schedule format: %s (try: hourly, daily, weekly, 4h, 30m)", s)
+}
+
+// GetIndicatorValue returns a named indicator value from a snapshot.
+func GetIndicatorValue(indicator string, snap IndicatorSnapshot) float64 {
+	switch strings.ToLower(indicator) {
+	case "rsi":
+		return snap.RSI
+	case "macd":
+		return snap.MACD
+	case "macd_signal":
+		return snap.MACDSignal
+	case "macd_histogram":
+		return snap.MACDHistogram
+	case "bollinger_upper":
+		return snap.BollingerUpper
+	case "bollinger_lower":
+		return snap.BollingerLower
+	case "sma20":
+		return snap.SMA20
+	case "sma50":
+		return snap.SMA50
+	case "ema12":
+		return snap.EMA12
+	case "ema26":
+		return snap.EMA26
+	case "price":
+		return snap.Price
+	default:
+		return 0
+	}
+}
+
+// EvalIndicatorConditions checks if all indicator conditions are met.
+func EvalIndicatorConditions(conditions []IndicatorCondition, snap IndicatorSnapshot, prevSnap *IndicatorSnapshot) bool {
+	for _, cond := range conditions {
+		current := GetIndicatorValue(cond.Indicator, snap)
+		switch cond.Operator {
+		case "<":
+			if !(current < cond.Value) {
+				return false
+			}
+		case ">":
+			if !(current > cond.Value) {
+				return false
+			}
+		case "crosses_above":
+			if prevSnap == nil {
+				return false
+			}
+			prev := GetIndicatorValue(cond.Indicator, *prevSnap)
+			if !(prev <= cond.Value && current > cond.Value) {
+				return false
+			}
+		case "crosses_below":
+			if prevSnap == nil {
+				return false
+			}
+			prev := GetIndicatorValue(cond.Indicator, *prevSnap)
+			if !(prev >= cond.Value && current < cond.Value) {
+				return false
+			}
+		}
+	}
+	return true
 }

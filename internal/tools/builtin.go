@@ -16,6 +16,7 @@ import (
 	"github.com/nickai/cli/internal/indicators"
 	"github.com/nickai/cli/internal/journal"
 	"github.com/nickai/cli/internal/market"
+	"github.com/nickai/cli/internal/memory"
 	"github.com/nickai/cli/internal/risk"
 	"github.com/nickai/cli/internal/strategy"
 )
@@ -329,6 +330,67 @@ func RegisterBuiltins(reg *Registry, client *api.PapernickClient, riskFn RiskLim
 			"required": ["description", "type", "action", "action_symbol", "action_value"]
 		}`),
 		Execute: makeCreateAutomation(),
+		Source:  "builtin",
+	})
+
+	reg.Register(ToolEntry{
+		Name:        "save_memory",
+		Description: "Save a memory for future sessions. Use to remember user preferences, trade outcomes, key insights.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"type": {"type": "string", "enum": ["insight", "preference", "context"], "description": "insight (trade learnings), preference (user habits), context (key facts)"},
+				"content": {"type": "string", "description": "The memory to save"},
+				"tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for categorization"}
+			},
+			"required": ["type", "content"]
+		}`),
+		Execute: makeSaveMemory(),
+		Source:  "builtin",
+	})
+
+	reg.Register(ToolEntry{
+		Name:        "recall_memory",
+		Description: "Search saved memories by keyword. Returns user preferences, trade outcomes, insights from past sessions.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"query": {"type": "string", "description": "Search query"}
+			},
+			"required": ["query"]
+		}`),
+		Execute: makeRecallMemory(),
+		Source:  "builtin",
+	})
+
+	reg.Register(ToolEntry{
+		Name:        "activate_strategy",
+		Description: "Activate a backtest strategy as a live monitoring rule. Converts entry conditions into indicator-based automation checked every 60 seconds.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"strategy_name": {"type": "string", "description": "Strategy name"},
+				"symbol": {"type": "string", "description": "Symbol to monitor"},
+				"entry_conditions": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"indicator": {"type": "string"},
+							"operator": {"type": "string"},
+							"value": {"type": "number"}
+						},
+						"required": ["indicator", "operator", "value"]
+					},
+					"description": "Indicator conditions to monitor"
+				},
+				"action": {"type": "string", "enum": ["buy", "sell"], "description": "Action when conditions met"},
+				"action_value": {"type": "number", "description": "Dollar value to trade"},
+				"max_fires": {"type": "integer", "description": "Max times to fire (default 1)"}
+			},
+			"required": ["symbol", "entry_conditions", "action", "action_value"]
+		}`),
+		Execute: makeActivateStrategy(),
 		Source:  "builtin",
 	})
 }
@@ -1039,4 +1101,122 @@ func randomToolID(n int) string {
 		time.Sleep(time.Nanosecond)
 	}
 	return string(b)
+}
+
+func makeSaveMemory() ToolFunc {
+	return func(_ context.Context, rawInput json.RawMessage) (string, error) {
+		var input struct {
+			Type    string   `json:"type"`
+			Content string   `json:"content"`
+			Tags    []string `json:"tags"`
+		}
+		if err := json.Unmarshal(rawInput, &input); err != nil {
+			return ErrorJSON("invalid input: " + err.Error()), nil
+		}
+		store, _ := memory.Load()
+		store.Add(memory.Entry{
+			ID:         randomToolID(8),
+			Type:       memory.MemoryType(input.Type),
+			Content:    input.Content,
+			Tags:       input.Tags,
+			CreatedAt:  time.Now(),
+			AccessedAt: time.Now(),
+			Score:      5,
+		})
+		store.Prune(50)
+		if err := store.Save(); err != nil {
+			return ErrorJSON("failed to save: " + err.Error()), nil
+		}
+		return ToJSON(map[string]string{"status": "saved", "content": input.Content}), nil
+	}
+}
+
+func makeRecallMemory() ToolFunc {
+	return func(_ context.Context, rawInput json.RawMessage) (string, error) {
+		var input struct {
+			Query string `json:"query"`
+		}
+		if err := json.Unmarshal(rawInput, &input); err != nil {
+			return ErrorJSON("invalid input: " + err.Error()), nil
+		}
+		store, _ := memory.Load()
+		results := store.Search(input.Query)
+		if len(results) == 0 {
+			return ToJSON(map[string]string{"status": "no_matches", "message": "No memories matching: " + input.Query}), nil
+		}
+		_ = store.Save() // persist AccessedAt updates
+		return ToJSON(map[string]any{"matches": results, "count": len(results)}), nil
+	}
+}
+
+func makeActivateStrategy() ToolFunc {
+	return func(_ context.Context, rawInput json.RawMessage) (string, error) {
+		var input struct {
+			StrategyName string `json:"strategy_name"`
+			Symbol       string `json:"symbol"`
+			Conditions   []struct {
+				Indicator string  `json:"indicator"`
+				Operator  string  `json:"operator"`
+				Value     float64 `json:"value"`
+			} `json:"entry_conditions"`
+			Action      string  `json:"action"`
+			ActionValue float64 `json:"action_value"`
+			MaxFires    int     `json:"max_fires"`
+		}
+		if err := json.Unmarshal(rawInput, &input); err != nil {
+			return ErrorJSON("invalid input: " + err.Error()), nil
+		}
+
+		symbol := strings.ToUpper(input.Symbol)
+		if input.MaxFires == 0 {
+			input.MaxFires = 1
+		}
+
+		var conditions []automation.IndicatorCondition
+		for _, c := range input.Conditions {
+			conditions = append(conditions, automation.IndicatorCondition{
+				Indicator: c.Indicator,
+				Operator:  c.Operator,
+				Value:     c.Value,
+			})
+		}
+
+		desc := fmt.Sprintf("Live strategy: %s on %s", input.StrategyName, symbol)
+		if input.StrategyName == "" {
+			desc = fmt.Sprintf("Live monitor: %s %s", input.Action, symbol)
+		}
+
+		rule := automation.AutoRule{
+			ID:                  randomToolID(8),
+			Description:         desc,
+			Type:                automation.RuleIndicator,
+			Symbol:              symbol,
+			IndicatorConditions: conditions,
+			SourceStrategy:      input.StrategyName,
+			Action:              input.Action,
+			ActionSymbol:        symbol,
+			ActionValue:         input.ActionValue,
+			ActionType:          "market",
+			Status:              "active",
+			MaxFires:            input.MaxFires,
+			CreatedAt:           time.Now(),
+		}
+
+		if err := automation.Add(rule); err != nil {
+			return ErrorJSON("failed to save: " + err.Error()), nil
+		}
+
+		condStrs := make([]string, len(conditions))
+		for i, c := range conditions {
+			condStrs[i] = fmt.Sprintf("%s %s %.2f", c.Indicator, c.Operator, c.Value)
+		}
+
+		return ToJSON(map[string]any{
+			"status":     "activated",
+			"id":         rule.ID,
+			"conditions": condStrs,
+			"action":     fmt.Sprintf("%s $%.0f %s when all conditions met", input.Action, input.ActionValue, symbol),
+			"note":       "Indicators checked every 60s. Each fire requires confirmation.",
+		}), nil
+	}
 }

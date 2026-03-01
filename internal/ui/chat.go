@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +24,11 @@ import (
 	"github.com/nickai/cli/internal/commands"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/indicators"
 	"github.com/nickai/cli/internal/journal"
+	"github.com/nickai/cli/internal/market"
 	"github.com/nickai/cli/internal/mcp"
+	"github.com/nickai/cli/internal/memory"
 	"github.com/nickai/cli/internal/notify"
 	"github.com/nickai/cli/internal/risk"
 	"github.com/nickai/cli/internal/strategy"
@@ -61,6 +65,7 @@ var knownCommands = []string{
 	"/alert", "/chart", "/theme", "/model", "/mcp", "/trigger",
 	"/risk", "/strategy", "/notify", "/analytics", "/analyze", "/auto",
 	"/backtest", "/bt", "/polymarket", "/pm", "/guide",
+	"/memory", "/mem", "/consensus", "/con",
 }
 
 var knownSymbols = []string{
@@ -267,6 +272,7 @@ type Model struct {
 	mcpManager   *mcp.ClientManager
 	credStore    *credential.Store
 	wfStore      *workflow.Store
+	memoryStore  *memory.Store
 }
 
 // New creates the initial model, loading config from disk.
@@ -342,9 +348,19 @@ func New() Model {
 	// Load automation rules.
 	savedAutomations, _ := automation.Load()
 
+	// Load AI memory store.
+	memStore, _ := memory.Load()
+
 	// Update risk info on agent.
 	if agent != nil && riskLimits != nil && !riskLimits.IsEmpty() {
 		agent.SetRiskInfo(riskPromptFromLimits(riskLimits))
+	}
+
+	// Inject memory context into agent.
+	if agent != nil && memStore != nil {
+		if info := memStore.ForPrompt(500); info != "" {
+			agent.SetMemoryInfo("Here are memories from previous sessions:\n" + info)
+		}
 	}
 
 	// Update automation hint on agent.
@@ -382,15 +398,57 @@ func New() Model {
 		mcpManager:   mcpMgr,
 		credStore:    credStore,
 		wfStore:      wfStore,
+		memoryStore:  memStore,
 	}
 }
 
-// cleanup shuts down MCP connections and saves history.
+// cleanup shuts down MCP connections, saves history, and summarizes session.
 func (m Model) cleanup() {
 	if m.mcpManager != nil {
 		m.mcpManager.CloseAll()
 	}
 	saveInputHistory(m.inputHistory)
+	m.summarizeSession()
+}
+
+// summarizeSession scans messages for traded symbols and saves context to memory.
+func (m Model) summarizeSession() {
+	if m.memoryStore == nil {
+		return
+	}
+	// Collect symbols mentioned in user messages.
+	symbolSet := map[string]bool{}
+	for _, msg := range m.messages {
+		if !msg.isUser {
+			continue
+		}
+		upper := strings.ToUpper(msg.content)
+		for _, sym := range knownSymbols {
+			if strings.Contains(upper, sym) {
+				symbolSet[sym] = true
+			}
+		}
+	}
+	if len(symbolSet) == 0 {
+		return
+	}
+	var syms []string
+	for s := range symbolSet {
+		syms = append(syms, s)
+	}
+	sort.Strings(syms)
+	entry := memory.Entry{
+		ID:         fmt.Sprintf("ses-%d", time.Now().UnixMilli()),
+		Type:       memory.TypeContext,
+		Content:    fmt.Sprintf("Session discussed: %s", strings.Join(syms, ", ")),
+		Tags:       syms,
+		CreatedAt:  time.Now(),
+		AccessedAt: time.Now(),
+		Score:      3,
+	}
+	m.memoryStore.Add(entry)
+	m.memoryStore.Prune(50)
+	_ = m.memoryStore.Save()
 }
 
 func (m Model) Init() tea.Cmd {
@@ -785,6 +843,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if fired {
 							return autoRuleFiredMsg{rule: r, price: price}
 						}
+
+					case automation.RulePortfolio:
+						portfolio, err := client.GetPortfolio()
+						if err != nil || portfolio == nil {
+							continue
+						}
+						var metricVal float64
+						switch r.MetricName {
+						case "total_value":
+							metricVal = portfolio.TotalValue
+						case "drawdown_pct":
+							metricVal = (100000 - portfolio.TotalValue) / 100000 * 100
+						case "cash":
+							metricVal = portfolio.Cash
+						case "cash_pct":
+							if portfolio.TotalValue > 0 {
+								metricVal = portfolio.Cash / portfolio.TotalValue * 100
+							}
+						default:
+							continue
+						}
+						fired := false
+						if r.Operator == ">" && metricVal > r.Threshold {
+							fired = true
+						}
+						if r.Operator == "<" && metricVal < r.Threshold {
+							fired = true
+						}
+						if fired {
+							return autoRuleFiredMsg{rule: r, price: metricVal}
+						}
+
+					case automation.RuleIndicator:
+						if r.Symbol == "" || len(r.IndicatorConditions) == 0 {
+							continue
+						}
+						baseSymbol := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(r.Symbol, "USDT"), "USDC"), "USD")
+						candles, err := market.FetchKlines(baseSymbol, "1h", 60)
+						if err != nil || len(candles) < 30 {
+							continue
+						}
+						closePrices := market.ClosePrices(candles)
+						snap := computeIndicatorSnapshot(closePrices)
+						var prevSnap *automation.IndicatorSnapshot
+						if len(closePrices) > 1 {
+							ps := computeIndicatorSnapshot(closePrices[:len(closePrices)-1])
+							prevSnap = &ps
+						}
+						if automation.EvalIndicatorConditions(r.IndicatorConditions, snap, prevSnap) {
+							prices, err := client.GetPrices([]string{baseSymbol})
+							if err != nil || len(prices) == 0 {
+								continue
+							}
+							return autoRuleFiredMsg{rule: r, price: prices[0].Price}
+						}
 					}
 				}
 				return nil
@@ -802,6 +915,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.addBotMessage(confirmCard)
 		m.updateViewport()
 		notify.Send(m.notifyConfig, "Automation Fired", r.Description)
+		return m, nil
+
+	case consensusDoneMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.messages[len(m.messages)-1] = message{
+				content: ErrorStyle.Render("  Consensus failed: ") + msg.err.Error(),
+				isUser:  false,
+			}
+		} else {
+			m.messages[len(m.messages)-1] = message{
+				content: RenderConsensusCard(msg.result),
+				isUser:  false,
+			}
+		}
+		m.updateViewport()
 		return m, nil
 
 	case tickerFetchMsg:
@@ -1159,6 +1288,25 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.updateViewport()
 			return m, nil
 
+		case commands.TypeMemory:
+			output := m.handleMemory(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			return m, nil
+
+		case commands.TypeConsensus:
+			output, cmd := m.handleConsensus(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
 		case commands.TypeAnalytics:
 			// Async API call with loading spinner.
 			m.loading = true
@@ -1176,20 +1324,15 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			)
 
 		case commands.TypeAnalyze:
-			// Async API call with loading spinner.
-			m.loading = true
-			m.loadingFrame = 0
-			m.loadingText = "Analyzing market..."
-			m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+			output, cmd := m.handleAnalyze(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
 			m.updateViewport()
-			rCopy := result
-			return m, tea.Batch(
-				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
-				func() tea.Msg {
-					output := m.renderResult(rCopy)
-					return apiResponseMsg{content: output}
-				},
-			)
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
 
 		case commands.TypePrice, commands.TypeStatus, commands.TypeOrders,
 			commands.TypeSnapshot, commands.TypeMarket, commands.TypePnl,
@@ -2539,6 +2682,49 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 			},
 		)
 
+	case "activate":
+		// /backtest activate <preset> <symbol> [value]
+		if m.agent == nil {
+			return BotMsgStyle.Render("nick: ") +
+				"I need an Anthropic API key to activate strategies. Set one with " +
+				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		}
+		if len(args) < 3 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/backtest activate <preset> <symbol> [value]"), nil
+		}
+		presetName := strings.ToLower(args[1])
+		symbol := strings.ToUpper(args[2])
+		value := ""
+		if len(args) >= 4 {
+			value = args[3]
+		}
+		prompt := fmt.Sprintf("Activate the %s strategy for %s as a live monitoring rule using the activate_strategy tool.", presetName, symbol)
+		if value != "" {
+			prompt += fmt.Sprintf(" Trade size: $%s.", value)
+		}
+
+		m.loading = true
+		m.streaming = true
+		m.loadingFrame = 0
+		m.loadingText = "Activating strategy..."
+		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+
+		tokenCh := make(chan string, 100)
+		m.streamCh = tokenCh
+		agent := m.agent
+		confirmCh := m.toolRegistry.ConfirmCh
+		return "", tea.Batch(
+			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+			func() tea.Msg {
+				defer close(tokenCh)
+				resp, err := agent.ChatStream(prompt, tokenCh)
+				return aiStreamDoneMsg{finalContent: resp, err: err}
+			},
+			waitForStreamToken(tokenCh),
+			waitForConfirmation(confirmCh),
+		)
+
 	default:
 		// Pass to AI as natural language backtest request.
 		if m.agent == nil {
@@ -2642,6 +2828,320 @@ func (m *Model) handleGuide(args []string) string {
 		section = strings.ToLower(args[0])
 	}
 	return RenderGuideCard(section)
+}
+
+// --- Memory command handler ---
+
+func (m *Model) handleMemory(args []string) string {
+	if m.memoryStore == nil {
+		return ErrorStyle.Render("  Memory store unavailable.")
+	}
+
+	if len(args) == 0 {
+		return RenderMemoryList(m.memoryStore.Entries)
+	}
+
+	sub := strings.ToLower(args[0])
+	switch sub {
+	case "clear":
+		m.memoryStore.Entries = nil
+		_ = m.memoryStore.Save()
+		if m.agent != nil {
+			m.agent.SetMemoryInfo("")
+		}
+		return BotMsgStyle.Render("nick: ") + "All memories cleared."
+
+	case "remove", "rm":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/memory remove <id-prefix>")
+		}
+		m.memoryStore.Remove(args[1])
+		_ = m.memoryStore.Save()
+		return BotMsgStyle.Render("nick: ") + "Memory removed."
+
+	default:
+		return RenderMemoryList(m.memoryStore.Entries)
+	}
+}
+
+// --- Consensus command handler ---
+
+// consensusDoneMsg carries the result of an async consensus run.
+type consensusDoneMsg struct {
+	result *ai.ConsensusResult
+	err    error
+}
+
+func (m *Model) handleConsensus(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return RenderConsensusHelp(), nil
+	}
+
+	sub := strings.ToLower(args[0])
+
+	// /consensus models — show model tiers.
+	if sub == "models" {
+		var rows []string
+		header := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("  Consensus Model Tiers")
+		divider := DimStyle.Render("  " + strings.Repeat("─", 50))
+		rows = append(rows, "", header, divider, "")
+
+		tierLabel := func(name string) string {
+			return lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("  " + name)
+		}
+
+		rows = append(rows, tierLabel("Tier 1 — Frontier (default):"))
+		for _, m := range ai.Tier1Models {
+			rows = append(rows, "    "+lipgloss.NewStyle().Foreground(ColorWhite).Render(m))
+		}
+		rows = append(rows, "")
+		rows = append(rows, tierLabel("Tier 2 — Diversity:"))
+		for _, m := range ai.Tier2Models {
+			rows = append(rows, "    "+lipgloss.NewStyle().Foreground(ColorWhite).Render(m))
+		}
+		rows = append(rows, "")
+		rows = append(rows, tierLabel("Tier 3 — Budget (free):"))
+		for _, m := range ai.Tier3Models {
+			rows = append(rows, "    "+lipgloss.NewStyle().Foreground(ColorWhite).Render(m))
+		}
+		rows = append(rows, "")
+		return strings.Join(rows, "\n"), nil
+	}
+
+	// Determine models and symbol.
+	var models []string
+	var symbol string
+	switch sub {
+	case "all":
+		models = ai.AllConsensusModels
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/consensus all <symbol>"), nil
+		}
+		symbol = strings.ToUpper(args[1])
+	case "budget":
+		models = ai.Tier3Models
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/consensus budget <symbol>"), nil
+		}
+		symbol = strings.ToUpper(args[1])
+	default:
+		models = ai.DefaultConsensusModels
+		symbol = strings.ToUpper(sub)
+	}
+
+	// Check for OpenRouter key.
+	orKey := m.cfg.DataKeyOrEnv("openrouter")
+	if orKey == "" {
+		return ErrorStyle.Render("  OpenRouter API key required.") + "\n" +
+			DimStyle.Render("  Set via: ") + CommandStyle.Render("/config set openrouter_key <key>"), nil
+	}
+
+	// Fetch current price.
+	prices, err := m.client.GetPrices([]string{symbol})
+	if err != nil || len(prices) == 0 {
+		return ErrorStyle.Render("  Failed to fetch price for " + symbol), nil
+	}
+	price := prices[0].Price
+
+	// Build market context.
+	var marketContext string
+	if candles, err := market.FetchKlines(symbol, "1d", 30); err == nil && len(candles) > 0 {
+		closes := market.ClosePrices(candles)
+		rsi := indicators.RSI(closes, 14)
+		macdLine, macdSignal, _ := indicators.MACDCalc(closes)
+		sma20 := indicators.SMA(closes, 20)
+		trend := indicators.TrendDirection(closes)
+		marketContext = fmt.Sprintf("RSI(14): %.1f | MACD: %.2f (signal: %.2f) | SMA20: %.2f | Trend: %s",
+			rsi, macdLine, macdSignal, sma20, trend)
+	}
+
+	// Run async with loading spinner.
+	m.loading = true
+	m.loadingFrame = 0
+	m.loadingText = fmt.Sprintf("Querying %d models for %s...", len(models), symbol)
+	m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+
+	orClient := ai.NewOpenRouterClient(orKey)
+	cfg := ai.ConsensusConfig{Models: models, Threshold: 0.67}
+	return "", tea.Batch(
+		tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			result := ai.RunConsensus(orClient, cfg, symbol, price, marketContext)
+			return consensusDoneMsg{result: result}
+		},
+	)
+}
+
+// --- Analyze command handler ---
+
+func (m *Model) handleAnalyze(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return RenderAnalyzeHelp(), nil
+	}
+
+	sub := strings.ToLower(args[0])
+
+	switch sub {
+	case "presets":
+		return RenderAnalysisPresets(), nil
+
+	case "run":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/analyze run <preset> [args]"), nil
+		}
+		presetName := strings.ToLower(args[1])
+		preset := backtest.GetAnalysisPreset(presetName)
+		if preset == nil {
+			return ErrorStyle.Render("  Unknown preset: ") + presetName + "\n" +
+				DimStyle.Render("  Run /analyze presets to see available presets"), nil
+		}
+		extraArgs := ""
+		if len(args) > 2 {
+			extraArgs = strings.Join(args[2:], " ")
+		}
+		return m.runAnalysisPreset(preset, extraArgs)
+
+	case "sentiment":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/analyze sentiment <symbol>"), nil
+		}
+		preset := backtest.GetAnalysisPreset("sentiment-check")
+		if preset == nil {
+			return ErrorStyle.Render("  Preset 'sentiment-check' not found."), nil
+		}
+		return m.runAnalysisPreset(preset, strings.ToUpper(args[1]))
+
+	case "whale":
+		if len(args) < 2 {
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/analyze whale <symbol>"), nil
+		}
+		preset := backtest.GetAnalysisPreset("whale-watch")
+		if preset == nil {
+			return ErrorStyle.Render("  Preset 'whale-watch' not found."), nil
+		}
+		return m.runAnalysisPreset(preset, strings.ToUpper(args[1]))
+
+	case "defi":
+		preset := backtest.GetAnalysisPreset("defi-yield")
+		if preset == nil {
+			return ErrorStyle.Render("  Preset 'defi-yield' not found."), nil
+		}
+		return m.runAnalysisPreset(preset, "")
+
+	default:
+		// Backward-compatible: /analyze BTC → technical analysis.
+		if !m.client.IsConfigured() {
+			return BotMsgStyle.Render("nick: ") +
+				"Connect a paper trading account first with " +
+				CommandStyle.Render("/config init"), nil
+		}
+		symbol := strings.ToUpper(sub)
+		m.loading = true
+		m.loadingFrame = 0
+		m.loadingText = "Analyzing market..."
+		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+		client := m.client
+		width := m.width
+		return "", tea.Batch(
+			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+			func() tea.Msg {
+				return apiResponseMsg{content: RenderAnalysis(client, symbol, width)}
+			},
+		)
+	}
+}
+
+// runAnalysisPreset sends a preset's AI prompt through the agent.
+func (m *Model) runAnalysisPreset(preset *backtest.AnalysisPreset, extraArgs string) (string, tea.Cmd) {
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key to run analysis presets. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+
+	// Check MCP tool requirements.
+	if missing := m.checkMCPTools(preset.MCPTools); len(missing) > 0 {
+		return ErrorStyle.Render("  Missing MCP servers: ") +
+			strings.Join(missing, ", ") + "\n" +
+			DimStyle.Render("  Install via: ") + CommandStyle.Render("/mcp add <server>"), nil
+	}
+
+	prompt := preset.Prompt
+	if extraArgs != "" {
+		prompt = strings.ReplaceAll(prompt, "{symbol}", extraArgs)
+		prompt = strings.ReplaceAll(prompt, "{args}", extraArgs)
+		if !strings.Contains(preset.Prompt, "{") {
+			prompt = prompt + " " + extraArgs
+		}
+	}
+
+	m.loading = true
+	m.streaming = true
+	m.loadingFrame = 0
+	m.loadingText = "Running " + preset.Name + "..."
+	m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+
+	tokenCh := make(chan string, 100)
+	m.streamCh = tokenCh
+	agent := m.agent
+	confirmCh := m.toolRegistry.ConfirmCh
+	return "", tea.Batch(
+		tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			defer close(tokenCh)
+			resp, err := agent.ChatStream(prompt, tokenCh)
+			return aiStreamDoneMsg{finalContent: resp, err: err}
+		},
+		waitForStreamToken(tokenCh),
+		waitForConfirmation(confirmCh),
+	)
+}
+
+// checkMCPTools returns a list of required MCP server names that are not connected.
+func (m *Model) checkMCPTools(required []string) []string {
+	if len(required) == 0 || m.mcpManager == nil {
+		return nil
+	}
+	connSet := map[string]bool{}
+	for _, c := range m.mcpManager.Connections() {
+		connSet[c.Name] = true
+	}
+	var missing []string
+	for _, r := range required {
+		if !connSet[r] {
+			missing = append(missing, r)
+		}
+	}
+	return missing
+}
+
+// computeIndicatorSnapshot builds an indicator snapshot from close prices.
+func computeIndicatorSnapshot(closePrices []float64) automation.IndicatorSnapshot {
+	snap := automation.IndicatorSnapshot{
+		Price: closePrices[len(closePrices)-1],
+	}
+	if len(closePrices) >= 14 {
+		snap.RSI = indicators.RSI(closePrices, 14)
+	}
+	if len(closePrices) >= 26 {
+		snap.MACD, snap.MACDSignal, snap.MACDHistogram = indicators.MACDCalc(closePrices)
+	}
+	if len(closePrices) >= 20 {
+		snap.SMA20 = indicators.SMA(closePrices, 20)
+		snap.BollingerUpper, _, snap.BollingerLower = indicators.BollingerBands(closePrices, 20)
+	}
+	if len(closePrices) >= 50 {
+		snap.SMA50 = indicators.SMA(closePrices, 50)
+	}
+	if len(closePrices) >= 12 {
+		snap.EMA12 = indicators.EMA(closePrices, 12)
+	}
+	if len(closePrices) >= 26 {
+		snap.EMA26 = indicators.EMA(closePrices, 26)
+	}
+	return snap
 }
 
 // --- Helper: streaming ---
@@ -2804,14 +3304,8 @@ func (m *Model) renderResult(r commands.Result) string {
 		return RenderAnalytics(m.client, m.width)
 
 	case commands.TypeAnalyze:
-		if !m.client.IsConfigured() {
-			return connectPrompt()
-		}
-		if len(r.Args) == 0 {
-			return ErrorStyle.Render("  Usage: ") +
-				CommandStyle.Render("/analyze BTC")
-		}
-		return RenderAnalysis(m.client, strings.ToUpper(r.Args[0]), m.width)
+		// Handled by handleAnalyze() now.
+		return ""
 
 	case commands.TypeAuto:
 		output, _ := m.handleAuto(r.Args)
