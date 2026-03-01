@@ -4,18 +4,20 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const DefaultBaseURL = "https://paper.getnick.ai/api/v1"
 
 // Config holds persistent NickAI CLI configuration.
 type Config struct {
-	APIKey       string `json:"api_key,omitempty"`
-	BaseURL      string `json:"base_url,omitempty"`
-	AnthropicKey string `json:"anthropic_key,omitempty"`
-	MinimaxKey   string `json:"minimax_key,omitempty"`
-	Theme        string `json:"theme,omitempty"`
-	Model        string `json:"model,omitempty"`
+	APIKey       string            `json:"api_key,omitempty"`
+	BaseURL      string            `json:"base_url,omitempty"`
+	AnthropicKey string            `json:"anthropic_key,omitempty"`
+	MinimaxKey   string            `json:"minimax_key,omitempty"`
+	Theme        string            `json:"theme,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	DataKeys     map[string]string `json:"data_keys,omitempty"` // premium data source API keys
 }
 
 // configPath returns ~/.nickai/config.json.
@@ -104,6 +106,19 @@ func (c *Config) MinimaxKeyOrEnv() string {
 		return c.MinimaxKey
 	}
 	return os.Getenv("MINIMAX_API_KEY")
+}
+
+// DataKeyOrEnv returns a premium data API key from config, falling back to
+// an environment variable. The env var name is constructed as
+// <PROVIDER>_API_KEY (uppercased, hyphens replaced with underscores).
+func (c *Config) DataKeyOrEnv(provider string) string {
+	if c.DataKeys != nil {
+		if key, ok := c.DataKeys[provider]; ok && key != "" {
+			return key
+		}
+	}
+	envName := strings.ToUpper(strings.ReplaceAll(provider, "-", "_")) + "_API_KEY"
+	return os.Getenv(envName)
 }
 
 func maskKey(k string) string {

@@ -41,6 +41,9 @@ const (
 	TypeAnalytics
 	TypeAnalyze
 	TypeAuto
+	TypeBacktest
+	TypePolymarket
+	TypeGuide
 	TypeUnknown
 )
 
@@ -133,6 +136,12 @@ func Route(input string) Result {
 		return Result{Type: TypeAnalyze, Input: trimmed, Args: args, IsCommand: true}
 	case "/auto", "/automation":
 		return Result{Type: TypeAuto, Input: trimmed, Args: args, IsCommand: true}
+	case "/backtest", "/bt":
+		return Result{Type: TypeBacktest, Input: trimmed, Args: args, IsCommand: true}
+	case "/polymarket", "/pm":
+		return Result{Type: TypePolymarket, Input: trimmed, Args: args, IsCommand: true}
+	case "/guide":
+		return Result{Type: TypeGuide, Input: trimmed, Args: args, IsCommand: true}
 	default:
 		return Result{Type: TypeUnknown, Input: cmd, IsCommand: true}
 	}

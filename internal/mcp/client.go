@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/nickai/cli/internal/risk"
 	"github.com/nickai/cli/internal/tools"
 )
 
 // MCPConnection represents a live connection to an external MCP server.
 type MCPConnection struct {
-	Name   string
-	Client *mcpclient.Client
-	Tools  []mcp.Tool
+	Name         string
+	Client       *mcpclient.Client
+	Tools        []mcp.Tool
+	Capabilities []Capability
 }
 
 // FailedConnection records a server that failed to start.
@@ -46,6 +49,10 @@ func (cm *ClientManager) ConnectAll(cfg *MCPConfig) {
 			log.Printf("MCP: failed to connect to %s: %v", name, err)
 			cm.failed = append(cm.failed, FailedConnection{Name: name, Error: err.Error()})
 			continue
+		}
+		// Attach capabilities from curated registry if available.
+		if entry := GetEntry(name); entry != nil {
+			conn.Capabilities = entry.Capabilities
 		}
 		cm.connections = append(cm.connections, conn)
 	}
@@ -94,20 +101,102 @@ func (cm *ClientManager) connect(name string, cfg MCPServerConfig) (*MCPConnecti
 	}, nil
 }
 
+// RiskLimitsFunc returns current risk limits for trade confirmation checks.
+type RiskLimitsFunc func() *risk.RiskLimits
+
 // RegisterTools adds all discovered MCP tools into the shared registry.
-// Each tool's executor proxies calls back to the originating MCP server.
-func (cm *ClientManager) RegisterTools(registry *tools.Registry) {
+// Servers with trade or on-chain capabilities get a confirming proxy that
+// asks for user approval before executing. riskFn may be nil (risk checks skipped).
+func (cm *ClientManager) RegisterTools(registry *tools.Registry, riskFn RiskLimitsFunc) {
 	for _, conn := range cm.connections {
+		hasTrade := hasTradeCapability(conn.Capabilities)
 		for _, tool := range conn.Tools {
+			var executor tools.ToolFunc
+			if hasTrade {
+				executor = makeConfirmingProxyExecutor(registry, conn.Client, tool.Name, riskFn)
+			} else {
+				executor = makeProxyExecutor(conn.Client, tool.Name)
+			}
 			entry := tools.ToolEntry{
 				Name:        tool.Name,
 				Description: tool.Description,
 				InputSchema: marshalSchema(tool.InputSchema),
-				Execute:     makeProxyExecutor(conn.Client, tool.Name),
+				Execute:     executor,
 				Source:      conn.Name,
 			}
 			registry.Register(entry)
 		}
+	}
+}
+
+// hasTradeCapability returns true if the capability list includes CapTrade or CapOnChain.
+func hasTradeCapability(caps []Capability) bool {
+	for _, c := range caps {
+		if c == CapTrade || c == CapOnChain {
+			return true
+		}
+	}
+	return false
+}
+
+// makeConfirmingProxyExecutor wraps the proxy executor with a best-effort risk
+// check and a user confirmation prompt (same pattern as builtin place_order).
+func makeConfirmingProxyExecutor(registry *tools.Registry, client *mcpclient.Client, toolName string, riskFn RiskLimitsFunc) tools.ToolFunc {
+	direct := makeProxyExecutor(client, toolName)
+	return func(ctx context.Context, rawInput json.RawMessage) (string, error) {
+		// Best-effort: parse symbol/side/quantity/price from input JSON.
+		var fields struct {
+			Symbol   string  `json:"symbol"`
+			Side     string  `json:"side"`
+			Quantity float64 `json:"quantity"`
+			Amount   float64 `json:"amount"`
+			Price    float64 `json:"price"`
+		}
+		_ = json.Unmarshal(rawInput, &fields)
+
+		// Best-effort risk check (portfolio-level checks skipped for MCP tools).
+		if riskFn != nil && fields.Symbol != "" {
+			limits := riskFn()
+			if limits != nil && !limits.IsEmpty() {
+				qty := fields.Quantity
+				if qty == 0 {
+					qty = fields.Amount
+				}
+				price := fields.Price
+				side := strings.ToLower(fields.Side)
+				if side == "" {
+					side = "buy"
+				}
+				if qty > 0 && price > 0 {
+					result := risk.CheckOrder(limits, nil, fields.Symbol, side, qty, price)
+					if !result.Allowed {
+						return tools.ErrorJSON("Risk limit: " + result.Reason), nil
+					}
+				}
+			}
+		}
+
+		// Build display string for confirmation.
+		display := fmt.Sprintf("MCP Tool: %s", toolName)
+		if fields.Symbol != "" {
+			display = fmt.Sprintf("%s %s %s", strings.ToUpper(fields.Side), fields.Symbol, toolName)
+		}
+
+		// Send confirmation request and block.
+		registry.ConfirmCh <- tools.ConfirmRequest{
+			ToolName: toolName,
+			Input:    rawInput,
+			Display:  display,
+		}
+		resp := <-registry.ResponseCh
+
+		if !resp.Approved {
+			return tools.ToJSON(map[string]string{
+				"status": "cancelled",
+				"reason": "User declined the action",
+			}), nil
+		}
+		return direct(ctx, rawInput)
 	}
 }
 

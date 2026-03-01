@@ -18,6 +18,7 @@ import (
 	"github.com/nickai/cli/internal/alert"
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/automation"
+	"github.com/nickai/cli/internal/backtest"
 	"github.com/nickai/cli/internal/commands"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
@@ -50,6 +51,7 @@ var knownCommands = []string{
 	"/logs", "/man", "/config", "/clear", "/quit",
 	"/alert", "/chart", "/theme", "/model", "/mcp", "/trigger",
 	"/risk", "/strategy", "/notify", "/analytics", "/analyze", "/auto",
+	"/backtest", "/bt", "/polymarket", "/pm", "/guide",
 }
 
 var knownSymbols = []string{
@@ -288,7 +290,8 @@ func New() Model {
 	if mcpCfg, err := mcp.LoadMCPConfig(); err == nil && len(mcpCfg.MCPServers) > 0 {
 		mcpMgr = mcp.NewClientManager()
 		mcpMgr.ConnectAll(mcpCfg)
-		mcpMgr.RegisterTools(registry)
+		mcpRiskFn := mcp.RiskLimitsFunc(riskFn)
+		mcpMgr.RegisterTools(registry, mcpRiskFn)
 	}
 
 	var agent *ai.Agent
@@ -1107,6 +1110,36 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.autoTicking = true
 				return m, tea.Tick(60*time.Second, func(t time.Time) tea.Msg { return autoTickMsg{} })
 			}
+			return m, nil
+
+		case commands.TypeBacktest:
+			output, cmd := m.handleBacktest(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypePolymarket:
+			output, cmd := m.handlePolymarket(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
+			if cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+
+		case commands.TypeGuide:
+			output := m.handleGuide(result.Args)
+			if output != "" {
+				m.addBotMessage(output)
+			}
+			m.updateViewport()
 			return m, nil
 
 		case commands.TypeAnalytics:
@@ -2428,6 +2461,163 @@ func (m *Model) handleAuto(args []string) (string, bool) {
 
 	return ErrorStyle.Render("  Unknown subcommand: ") + sub + "\n" +
 		DimStyle.Render("  Try: list, pause, resume, remove"), false
+}
+
+// --- /backtest handler ---
+
+func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
+	if len(args) == 0 {
+		return RenderBacktestHelp(), nil
+	}
+
+	sub := strings.ToLower(args[0])
+
+	switch sub {
+	case "presets", "list":
+		return RenderBacktestPresets(), nil
+
+	case "run":
+		if len(args) < 3 {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/backtest run <preset> <symbol> [period]"), nil
+		}
+		presetName := strings.ToLower(args[1])
+		symbol := strings.ToUpper(args[2])
+		period := "180d"
+		if len(args) >= 4 {
+			period = args[3]
+		}
+
+		preset := backtest.GetPreset(presetName)
+		if preset == nil {
+			return ErrorStyle.Render("  Unknown preset: ") + presetName + "\n" +
+				DimStyle.Render("  Run /backtest presets to see available strategies"), nil
+		}
+
+		// Run backtest asynchronously with loading spinner.
+		m.loading = true
+		m.loadingFrame = 0
+		m.loadingText = "Running backtest..."
+		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+
+		strat := preset.Strategy
+		strat.Symbol = symbol
+		strat.Period = period
+
+		return "", tea.Batch(
+			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+			func() tea.Msg {
+				result, err := backtest.Run(strat)
+				if err != nil {
+					return apiResponseMsg{content: ErrorStyle.Render("  Backtest failed: ") + err.Error()}
+				}
+				return apiResponseMsg{content: RenderBacktestCard(result)}
+			},
+		)
+
+	default:
+		// Pass to AI as natural language backtest request.
+		if m.agent == nil {
+			return BotMsgStyle.Render("nick: ") +
+				"I need an Anthropic API key to chat. Set one with " +
+				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		}
+
+		prompt := "Backtest the following strategy using the backtest_strategy tool: " + strings.Join(args, " ")
+		m.loading = true
+		m.streaming = true
+		m.loadingFrame = 0
+		m.loadingText = "Building backtest..."
+		m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+
+		tokenCh := make(chan string, 100)
+		m.streamCh = tokenCh
+		agent := m.agent
+		confirmCh := m.toolRegistry.ConfirmCh
+		return "", tea.Batch(
+			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+			func() tea.Msg {
+				defer close(tokenCh)
+				resp, err := agent.ChatStream(prompt, tokenCh)
+				return aiStreamDoneMsg{finalContent: resp, err: err}
+			},
+			waitForStreamToken(tokenCh),
+			waitForConfirmation(confirmCh),
+		)
+	}
+}
+
+// --- /polymarket handler ---
+
+func (m *Model) handlePolymarket(args []string) (string, tea.Cmd) {
+	if m.agent == nil {
+		return BotMsgStyle.Render("nick: ") +
+			"I need an Anthropic API key for Polymarket analysis. Set one with " +
+			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	}
+
+	sub := "scan"
+	if len(args) > 0 {
+		sub = strings.ToLower(args[0])
+	}
+
+	var prompt string
+	switch sub {
+	case "scan":
+		preset := backtest.GetAnalysisPreset("polymarket-scan")
+		if preset != nil {
+			prompt = preset.Prompt
+		} else {
+			prompt = "Scan top Polymarket events and find mispriced contracts using available MCP tools."
+		}
+	case "analyze":
+		event := strings.Join(args[1:], " ")
+		if event == "" {
+			return ErrorStyle.Render("  Usage: ") +
+				CommandStyle.Render("/polymarket analyze <event>"), nil
+		}
+		preset := backtest.GetAnalysisPreset("polymarket-deep")
+		if preset != nil {
+			prompt = fmt.Sprintf(preset.Prompt, event)
+		} else {
+			prompt = "Do a deep analysis of this Polymarket event: " + event
+		}
+	case "hot":
+		prompt = "Show trending Polymarket events with the biggest volume and price moves using available tools."
+	default:
+		prompt = "Analyze the following using Polymarket tools: " + strings.Join(args, " ")
+	}
+
+	m.loading = true
+	m.streaming = true
+	m.loadingFrame = 0
+	m.loadingText = "Analyzing prediction markets..."
+	m.addBotMessage(BotMsgStyle.Render("nick: ") + spinnerFrames[0] + " " + m.loadingText)
+
+	tokenCh := make(chan string, 100)
+	m.streamCh = tokenCh
+	agent := m.agent
+	confirmCh := m.toolRegistry.ConfirmCh
+	return "", tea.Batch(
+		tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
+		func() tea.Msg {
+			defer close(tokenCh)
+			resp, err := agent.ChatStream(prompt, tokenCh)
+			return aiStreamDoneMsg{finalContent: resp, err: err}
+		},
+		waitForStreamToken(tokenCh),
+		waitForConfirmation(confirmCh),
+	)
+}
+
+// --- /guide handler ---
+
+func (m *Model) handleGuide(args []string) string {
+	section := "start"
+	if len(args) > 0 {
+		section = strings.ToLower(args[0])
+	}
+	return RenderGuideCard(section)
 }
 
 // --- Helper: streaming ---

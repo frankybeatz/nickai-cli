@@ -12,8 +12,10 @@ import (
 	"github.com/nickai/cli/internal/analytics"
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/automation"
+	"github.com/nickai/cli/internal/backtest"
 	"github.com/nickai/cli/internal/indicators"
 	"github.com/nickai/cli/internal/journal"
+	"github.com/nickai/cli/internal/market"
 	"github.com/nickai/cli/internal/risk"
 	"github.com/nickai/cli/internal/strategy"
 )
@@ -195,6 +197,69 @@ func RegisterBuiltins(reg *Registry, client *api.PapernickClient, riskFn RiskLim
 			"required": ["symbol"]
 		}`),
 		Execute: makeAnalyzeMarket(client),
+		Source:  "builtin",
+	})
+
+	reg.Register(ToolEntry{
+		Name:        "backtest_strategy",
+		Description: "Backtest a trading strategy against historical data. Define entry/exit conditions using technical indicators (rsi, macd, macd_histogram, macd_signal, bollinger_upper, bollinger_lower, sma20, sma50, ema12, ema26, price, fear_greed) with operators (<, >, crosses_above, crosses_below). Returns trade list, win rate, total return, Sharpe ratio, max drawdown, and equity curve.",
+		InputSchema: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"preset": {
+					"type": "string",
+					"description": "Name of a preset strategy (rsi-reversal, macd-crossover, bollinger-bounce, golden-cross, momentum, fear-and-greed, dip-buyer). If set, other fields are optional overrides."
+				},
+				"symbol": {
+					"type": "string",
+					"description": "Asset symbol, e.g. BTC, ETH, SOL"
+				},
+				"entry_conditions": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"indicator": {"type": "string", "description": "Indicator name: rsi, macd, macd_histogram, macd_signal, bollinger_upper, bollinger_lower, sma20, sma50, ema12, ema26, price, fear_greed"},
+							"operator": {"type": "string", "description": "Comparison: <, >, crosses_above, crosses_below"},
+							"value": {"type": "number", "description": "Threshold value"}
+						},
+						"required": ["indicator", "operator", "value"]
+					},
+					"description": "Conditions that must ALL be true to enter a position"
+				},
+				"exit_conditions": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"indicator": {"type": "string"},
+							"operator": {"type": "string"},
+							"value": {"type": "number"}
+						},
+						"required": ["indicator", "operator", "value"]
+					},
+					"description": "Conditions that must ALL be true to exit a position"
+				},
+				"stop_loss_pct": {
+					"type": "number",
+					"description": "Stop loss percentage, e.g. 5 for 5%"
+				},
+				"take_profit_pct": {
+					"type": "number",
+					"description": "Take profit percentage, e.g. 15 for 15%"
+				},
+				"position_size": {
+					"type": "number",
+					"description": "Position size as fraction (0.0-1.0), default 1.0"
+				},
+				"period": {
+					"type": "string",
+					"description": "Backtest period, e.g. 180d, 6m, 1y. Default 180d."
+				}
+			},
+			"required": ["symbol"]
+		}`),
+		Execute: makeBacktestStrategy(),
 		Source:  "builtin",
 	})
 
@@ -792,8 +857,13 @@ func makeAnalyzeMarket(client *api.PapernickClient) ToolFunc {
 		}
 		currentPrice := prices[0].Price
 
-		// Generate synthetic 50-point price history.
-		history := generateSyntheticHistory(currentPrice, 50)
+		// Fetch real price history from Binance, fallback to synthetic.
+		var history []float64
+		if candles, err := market.FetchKlines(symbol, "1d", 50); err == nil && len(candles) > 0 {
+			history = market.ClosePrices(candles)
+		} else {
+			history = generateSyntheticHistory(currentPrice, 50)
+		}
 
 		// Fetch Fear & Greed.
 		fg, fgLabel, _ := indicators.FetchFearGreed()
@@ -890,6 +960,73 @@ func makeCreateAutomation() ToolFunc {
 			"schedule":    rule.Schedule,
 			"note":        "Rule is active. Each fire will require user confirmation.",
 		}), nil
+	}
+}
+
+// makeBacktestStrategy creates the backtest executor.
+func makeBacktestStrategy() ToolFunc {
+	return func(_ context.Context, rawInput json.RawMessage) (string, error) {
+		var input struct {
+			Preset     string              `json:"preset"`
+			Symbol     string              `json:"symbol"`
+			Entry      []backtest.Condition `json:"entry_conditions"`
+			Exit       []backtest.Condition `json:"exit_conditions"`
+			StopLoss   float64             `json:"stop_loss_pct"`
+			TakeProfit float64             `json:"take_profit_pct"`
+			PosSize    float64             `json:"position_size"`
+			Period     string              `json:"period"`
+		}
+		if err := json.Unmarshal(rawInput, &input); err != nil {
+			return ErrorJSON("invalid input: " + err.Error()), nil
+		}
+
+		var strat backtest.Strategy
+
+		// If preset specified, load it as base.
+		if input.Preset != "" {
+			preset := backtest.GetPreset(input.Preset)
+			if preset == nil {
+				return ErrorJSON("unknown preset: " + input.Preset + ". Available: rsi-reversal, macd-crossover, bollinger-bounce, golden-cross, momentum, fear-and-greed, dip-buyer"), nil
+			}
+			strat = preset.Strategy
+		}
+
+		// Override with provided values.
+		if input.Symbol != "" {
+			strat.Symbol = strings.ToUpper(input.Symbol)
+		}
+		if len(input.Entry) > 0 {
+			strat.EntryRules = input.Entry
+		}
+		if len(input.Exit) > 0 {
+			strat.ExitRules = input.Exit
+		}
+		if input.StopLoss > 0 {
+			strat.StopLossPct = input.StopLoss
+		}
+		if input.TakeProfit > 0 {
+			strat.TakeProfitPct = input.TakeProfit
+		}
+		if input.PosSize > 0 {
+			strat.PositionSize = input.PosSize
+		}
+		if input.Period != "" {
+			strat.Period = input.Period
+		}
+
+		if strat.Symbol == "" {
+			return ErrorJSON("symbol is required"), nil
+		}
+		if strat.Period == "" {
+			strat.Period = "180d"
+		}
+
+		result, err := backtest.Run(strat)
+		if err != nil {
+			return ErrorJSON("backtest failed: " + err.Error()), nil
+		}
+
+		return ToJSON(result), nil
 	}
 }
 

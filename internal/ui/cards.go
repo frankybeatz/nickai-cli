@@ -13,8 +13,10 @@ import (
 	"github.com/nickai/cli/internal/automation"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/backtest"
 	"github.com/nickai/cli/internal/indicators"
 	"github.com/nickai/cli/internal/journal"
+	"github.com/nickai/cli/internal/market"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/mock"
 	"github.com/nickai/cli/internal/notify"
@@ -1139,7 +1141,13 @@ func RenderChart(client *api.PapernickClient, symbol string, width int) string {
 	}
 
 	currentPrice := prices[0].Price
-	data := generateSparklineData(currentPrice, 50)
+	// Fetch real price history from Binance, fallback to synthetic.
+	var data []float64
+	if candles, err := market.FetchKlines(symbol, "1d", 50); err == nil && len(candles) > 0 {
+		data = market.ClosePrices(candles)
+	} else {
+		data = generateSparklineData(currentPrice, 50)
+	}
 	sparkline := renderSparkline(data, cardWidth-8)
 
 	// Calculate simulated high/low from the data.
@@ -1310,6 +1318,10 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/notify set desktop on", "Desktop notifications"))
 	lines = append(lines, cmdLine("/analytics", "Portfolio analytics"))
 	lines = append(lines, cmdLine("/analyze BTC", "Market analysis"))
+	lines = append(lines, cmdLine("/backtest presets", "Backtest preset strategies"))
+	lines = append(lines, cmdLine("/backtest run rsi-reversal BTC", "Run a backtest preset"))
+	lines = append(lines, cmdLine("/polymarket scan", "Prediction market analysis"))
+	lines = append(lines, cmdLine("/guide", "Interactive guide"))
 	lines = append(lines, cmdLine("/logs <workflow>", "Workflow execution logs"))
 
 	lines = append(lines, sectionHeader("Setup & Integrations"))
@@ -1720,8 +1732,13 @@ func RenderAnalysis(client *api.PapernickClient, symbol string, width int) strin
 	}
 	currentPrice := prices[0].Price
 
-	// Generate synthetic price history.
-	history := generateSparklineData(currentPrice, 50)
+	// Fetch real price history from Binance, fallback to synthetic.
+	var history []float64
+	if candles, err := market.FetchKlines(symbol, "1d", 50); err == nil && len(candles) > 0 {
+		history = market.ClosePrices(candles)
+	} else {
+		history = generateSparklineData(currentPrice, 50)
+	}
 
 	// Fear & Greed.
 	fg, fgLabel, _ := indicators.FetchFearGreed()
@@ -1873,6 +1890,336 @@ func RenderAutoHelp() string {
 		DimStyle.Render("  Create rules by asking the AI:"),
 		"  " + CommandStyle.Render("\"buy $100 of BTC every day\""),
 		"  " + CommandStyle.Render("\"sell ETH if it goes above 5000\""),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// --- Backtest rendering ---
+
+// RenderBacktestCard renders backtest results as a styled card.
+func RenderBacktestCard(result *backtest.Result) string {
+	if result == nil {
+		return ErrorStyle.Render("  No backtest results.")
+	}
+
+	cardWidth := 64
+
+	var lines []string
+	lines = append(lines, "")
+
+	// Header.
+	name := result.Strategy
+	if name == "" {
+		name = "Custom Strategy"
+	}
+	lines = append(lines, BrandStyle.Render(name)+"  "+
+		lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(result.Symbol)+
+		DimStyle.Render("  "+result.Period))
+	lines = append(lines, "")
+
+	// Metrics table.
+	metricLine := func(label string, value string) string {
+		return DimStyle.Render(padRight("  "+label, 22)) +
+			lipgloss.NewStyle().Foreground(ColorWhite).Render(value)
+	}
+
+	returnColor := ColorPrimary
+	if result.TotalReturn < 0 {
+		returnColor = ColorError
+	}
+
+	lines = append(lines, metricLine("Total Trades", fmt.Sprintf("%d", result.TotalTrades)))
+	lines = append(lines, metricLine("Win Rate", fmt.Sprintf("%.1f%%", result.WinRate)))
+	lines = append(lines, DimStyle.Render(padRight("  Total Return", 22))+
+		lipgloss.NewStyle().Foreground(returnColor).Bold(true).Render(fmt.Sprintf("%.2f%%", result.TotalReturn)))
+	lines = append(lines, metricLine("Sharpe Ratio", fmt.Sprintf("%.2f", result.SharpeRatio)))
+	lines = append(lines, metricLine("Max Drawdown", fmt.Sprintf("%.2f%%", result.MaxDrawdown)))
+	if !math.IsInf(result.ProfitFactor, 0) {
+		lines = append(lines, metricLine("Profit Factor", fmt.Sprintf("%.2f", result.ProfitFactor)))
+	}
+
+	// Best/Worst trade.
+	if result.TotalTrades > 0 {
+		lines = append(lines, "")
+		bestColor := ColorPrimary
+		if result.BestTrade < 0 {
+			bestColor = ColorError
+		}
+		worstColor := ColorError
+		if result.WorstTrade > 0 {
+			worstColor = ColorPrimary
+		}
+		lines = append(lines, DimStyle.Render(padRight("  Best Trade", 22))+
+			lipgloss.NewStyle().Foreground(bestColor).Render(fmt.Sprintf("%+.2f%%", result.BestTrade)))
+		lines = append(lines, DimStyle.Render(padRight("  Worst Trade", 22))+
+			lipgloss.NewStyle().Foreground(worstColor).Render(fmt.Sprintf("%+.2f%%", result.WorstTrade)))
+	}
+
+	// Equity curve sparkline.
+	if len(result.EquityCurve) > 2 {
+		lines = append(lines, "")
+		sparkWidth := cardWidth - 6
+		if sparkWidth > 40 {
+			sparkWidth = 40
+		}
+		lines = append(lines, "  "+renderSparkline(result.EquityCurve, sparkWidth))
+		lines = append(lines, DimStyle.Render("  Equity curve"))
+	}
+
+	// Trade list (last 10).
+	if len(result.Trades) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("  Recent Trades"))
+		showCount := len(result.Trades)
+		startIdx := 0
+		if showCount > 10 {
+			startIdx = showCount - 10
+			lines = append(lines, DimStyle.Render(fmt.Sprintf("  (showing last 10 of %d)", showCount)))
+		}
+		for i := startIdx; i < showCount; i++ {
+			t := result.Trades[i]
+			pnlColor := ColorPrimary
+			if t.PnLPct < 0 {
+				pnlColor = ColorError
+			}
+			entry := t.EntryTime.Format("Jan 02")
+			exit := t.ExitTime.Format("Jan 02")
+			pnl := lipgloss.NewStyle().Foreground(pnlColor).Render(fmt.Sprintf("%+.2f%%", t.PnLPct))
+			reason := DimStyle.Render(t.Reason)
+			lines = append(lines, fmt.Sprintf("  %s → %s  %s  %s", entry, exit, pnl, reason))
+		}
+	}
+
+	lines = append(lines, "")
+
+	content := strings.Join(lines, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorPrimary).
+		Padding(0, 2).
+		Width(cardWidth).
+		Render(content)
+
+	return SecondaryStyle.Render("  Backtest Results") + "\n" + box
+}
+
+// RenderBacktestHelp shows /backtest usage.
+func RenderBacktestHelp() string {
+	header := SecondaryStyle.Render("  /backtest — strategy backtesting\n")
+	lines := []string{
+		header,
+		"  " + CommandStyle.Render("/backtest presets") + DimStyle.Render("                — list preset strategies"),
+		"  " + CommandStyle.Render("/backtest run <preset> <symbol>") + DimStyle.Render(" — run a preset"),
+		"  " + CommandStyle.Render("/backtest run momentum ETH 90d") + DimStyle.Render(" — preset with custom period"),
+		"",
+		DimStyle.Render("  Or describe a custom strategy:"),
+		"  " + CommandStyle.Render("/backtest BTC RSI below 30 with 5% stop loss"),
+		"  " + CommandStyle.Render("\"backtest buying ETH when RSI drops below 30\""),
+		"",
+		DimStyle.Render("  Available presets: rsi-reversal, macd-crossover, bollinger-bounce,"),
+		DimStyle.Render("  golden-cross, momentum, fear-and-greed, dip-buyer"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+// RenderBacktestPresets shows all available preset strategies.
+func RenderBacktestPresets() string {
+	presets := backtest.GetPresets()
+
+	var lines []string
+	lines = append(lines, SecondaryStyle.Render("  Backtest Presets\n"))
+
+	for _, p := range presets {
+		name := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(padRight(p.Strategy.Name, 20))
+		desc := DimStyle.Render(p.Description)
+		lines = append(lines, "  "+name+desc)
+
+		// Details.
+		details := "    "
+		if p.Strategy.StopLossPct > 0 {
+			details += DimStyle.Render(fmt.Sprintf("SL: %.0f%%", p.Strategy.StopLossPct))
+		}
+		if p.Strategy.TakeProfitPct > 0 {
+			details += DimStyle.Render(fmt.Sprintf("  TP: %.0f%%", p.Strategy.TakeProfitPct))
+		}
+		lines = append(lines, details)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, DimStyle.Render("  Run: ")+
+		CommandStyle.Render("/backtest run <name> <symbol> [period]"))
+	lines = append(lines, DimStyle.Render("  Example: ")+
+		CommandStyle.Render("/backtest run rsi-reversal BTC 90d"))
+
+	return strings.Join(lines, "\n")
+}
+
+// --- Guide rendering ---
+
+// RenderGuideCard renders an interactive guide section.
+func RenderGuideCard(section string) string {
+	switch section {
+	case "start", "":
+		return renderGuideStart()
+	case "trading":
+		return renderGuideTrading()
+	case "analysis":
+		return renderGuideAnalysis()
+	case "backtest":
+		return renderGuideBacktest()
+	case "ai":
+		return renderGuideAI()
+	case "mcp":
+		return renderGuideMCP()
+	case "risk":
+		return renderGuideRisk()
+	case "polymarket":
+		return renderGuidePolymarket()
+	default:
+		return ErrorStyle.Render("  Unknown guide section: ") + section + "\n" +
+			DimStyle.Render("  Available: start, trading, analysis, backtest, ai, mcp, risk, polymarket")
+	}
+}
+
+func renderGuideStart() string {
+	lines := []string{
+		SecondaryStyle.Render("  NickAI Guide\n"),
+		lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("  Welcome to NickAI!"),
+		DimStyle.Render("  Your AI trading analyst in the terminal.\n"),
+		DimStyle.Render("  Sections:"),
+		"  " + CommandStyle.Render("/guide trading") + DimStyle.Render("      — paper trading basics"),
+		"  " + CommandStyle.Render("/guide analysis") + DimStyle.Render("     — technical analysis + charts"),
+		"  " + CommandStyle.Render("/guide backtest") + DimStyle.Render("     — backtesting strategies"),
+		"  " + CommandStyle.Render("/guide ai") + DimStyle.Render("           — talking to Nick effectively"),
+		"  " + CommandStyle.Render("/guide mcp") + DimStyle.Render("          — connecting external tools"),
+		"  " + CommandStyle.Render("/guide risk") + DimStyle.Render("         — setting up guardrails"),
+		"  " + CommandStyle.Render("/guide polymarket") + DimStyle.Render("   — prediction market analysis"),
+		"",
+		DimStyle.Render("  Start with: ") + CommandStyle.Render("/guide trading"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideTrading() string {
+	lines := []string{
+		SecondaryStyle.Render("  Paper Trading Basics\n"),
+		"  " + DimStyle.Render("1.") + " Check prices:              " + CommandStyle.Render("/price BTC ETH SOL"),
+		"  " + DimStyle.Render("2.") + " Buy an asset:              " + CommandStyle.Render("/buy BTC 0.1"),
+		"  " + DimStyle.Render("3.") + " Check your portfolio:      " + CommandStyle.Render("/status"),
+		"  " + DimStyle.Render("4.") + " View trade history:        " + CommandStyle.Render("/history"),
+		"  " + DimStyle.Render("5.") + " Sell when ready:           " + CommandStyle.Render("/sell BTC 0.05"),
+		"",
+		DimStyle.Render("  Or just ask Nick:"),
+		"  " + CommandStyle.Render("\"should I buy ETH right now?\""),
+		"  " + CommandStyle.Render("\"buy $500 of SOL\""),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide analysis"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideAnalysis() string {
+	lines := []string{
+		SecondaryStyle.Render("  Technical Analysis\n"),
+		"  " + DimStyle.Render("1.") + " Quick analysis:            " + CommandStyle.Render("/analyze BTC"),
+		"  " + DimStyle.Render("2.") + " Sparkline chart:           " + CommandStyle.Render("/chart ETH"),
+		"  " + DimStyle.Render("3.") + " Portfolio analytics:       " + CommandStyle.Render("/analytics"),
+		"  " + DimStyle.Render("4.") + " Market overview:           " + CommandStyle.Render("/market"),
+		"",
+		DimStyle.Render("  Analysis uses real Binance OHLCV data with RSI, MACD,"),
+		DimStyle.Render("  Bollinger Bands, SMAs, and Fear & Greed Index."),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide backtest"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideBacktest() string {
+	lines := []string{
+		SecondaryStyle.Render("  Backtesting Strategies\n"),
+		"  " + DimStyle.Render("1.") + " Try a preset strategy:",
+		"     " + CommandStyle.Render("/backtest run rsi-reversal BTC"),
+		"",
+		"  " + DimStyle.Render("2.") + " See all presets:",
+		"     " + CommandStyle.Render("/backtest presets"),
+		"",
+		"  " + DimStyle.Render("3.") + " Describe your own strategy:",
+		"     " + CommandStyle.Render("\"backtest buying ETH when RSI drops below 30\""),
+		"",
+		"  " + DimStyle.Render("4.") + " Iterate with Nick:",
+		"     " + CommandStyle.Render("\"add a 5% stop loss and try again\""),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide risk"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideAI() string {
+	lines := []string{
+		SecondaryStyle.Render("  Talking to Nick\n"),
+		DimStyle.Render("  Nick understands natural language. Try:"),
+		"",
+		"  " + CommandStyle.Render("\"What's your take on ETH?\""),
+		"  " + CommandStyle.Render("\"Build me a diversified crypto portfolio\""),
+		"  " + CommandStyle.Render("\"Rebalance to 50% BTC 30% ETH 20% SOL\""),
+		"  " + CommandStyle.Render("\"DCA $100 into BTC daily\""),
+		"  " + CommandStyle.Render("\"Backtest buying dips with RSI and Fear & Greed\""),
+		"",
+		DimStyle.Render("  Nick always asks for confirmation before trading."),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide mcp"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideMCP() string {
+	lines := []string{
+		SecondaryStyle.Render("  Connecting External Tools (MCP)\n"),
+		DimStyle.Render("  MCP servers give Nick extra powers:\n"),
+		"  " + CommandStyle.Render("/mcp add defillama") + DimStyle.Render("    — DeFi yields & TVL (free)"),
+		"  " + CommandStyle.Render("/mcp add tradingview") + DimStyle.Render("  — charts & screeners (free)"),
+		"  " + CommandStyle.Render("/mcp add onchain") + DimStyle.Render("      — on-chain data (free)"),
+		"  " + CommandStyle.Render("/mcp add brave-search") + DimStyle.Render(" — web search for sentiment"),
+		"  " + CommandStyle.Render("/mcp add ccxt") + DimStyle.Render("         — live exchange trading"),
+		"",
+		"  " + CommandStyle.Render("/mcp quick") + DimStyle.Render("            — install all free servers"),
+		"  " + CommandStyle.Render("/mcp list") + DimStyle.Render("             — see what's connected"),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide risk"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuideRisk() string {
+	lines := []string{
+		SecondaryStyle.Render("  Risk Guardrails\n"),
+		DimStyle.Render("  Set limits before going live:\n"),
+		"  " + CommandStyle.Render("/risk set max_order_value 5000") + DimStyle.Render("  — $5K per order cap"),
+		"  " + CommandStyle.Render("/risk set max_position_pct 25") + DimStyle.Render("   — 25% max per asset"),
+		"  " + CommandStyle.Render("/risk set daily_loss_pct 5") + DimStyle.Render("      — stop if down 5%"),
+		"  " + CommandStyle.Render("/risk show") + DimStyle.Render("                          — view current limits"),
+		"",
+		DimStyle.Render("  All trades (manual & AI) are checked against these limits."),
+		DimStyle.Render("  MCP trade tools also require confirmation."),
+		"",
+		DimStyle.Render("  Next: ") + CommandStyle.Render("/guide polymarket"),
+	}
+	return strings.Join(lines, "\n")
+}
+
+func renderGuidePolymarket() string {
+	lines := []string{
+		SecondaryStyle.Render("  Prediction Market Analysis\n"),
+		DimStyle.Render("  Analyze Polymarket events with AI:\n"),
+		"  " + CommandStyle.Render("/polymarket scan") + DimStyle.Render("          — find mispriced contracts"),
+		"  " + CommandStyle.Render("/polymarket analyze <event>") + DimStyle.Render(" — deep dive on an event"),
+		"  " + CommandStyle.Render("/polymarket hot") + DimStyle.Render("            — trending events"),
+		"",
+		DimStyle.Render("  Requires MCP servers:"),
+		"  " + CommandStyle.Render("/mcp add polymarket"),
+		"  " + CommandStyle.Render("/mcp add brave-search"),
+		"",
+		DimStyle.Render("  That's the guide! Type anything to start trading."),
 	}
 	return strings.Join(lines, "\n")
 }

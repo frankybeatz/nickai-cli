@@ -66,7 +66,7 @@ func saveMCPConfig(cfg *MCPConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // AddServerToConfig adds a registry entry to ~/.nickai/mcp.json.
