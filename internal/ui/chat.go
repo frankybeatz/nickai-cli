@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,14 @@ const (
 )
 
 // Tab completion data.
+// oscResponseRe matches full OSC 10/11 terminal color query responses
+// (e.g. ESC]11;rgb:XXXX/XXXX/XXXX BEL) delivered as a single key event.
+var oscResponseRe = regexp.MustCompile(`\x1b?\]1[01];rgb:[0-9a-fA-F/]+\x07?`)
+
+// oscLeakRe matches OSC color fragments that leak into the text input buffer
+// character-by-character (e.g. "gb:213d/2743/33e7" or "]11;rgb:213d/2743/33e7").
+var oscLeakRe = regexp.MustCompile(`\x1b?\]?1?[01]?;?r?gb:[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}\x07?`)
+
 var knownCommands = []string{
 	"/help", "/status", "/orders", "/agents", "/templates",
 	"/buy", "/sell", "/price", "/watch", "/snapshot",
@@ -61,7 +70,7 @@ var knownSymbols = []string{
 var symbolCommands = map[string]bool{
 	"/price": true, "/buy": true, "/sell": true,
 	"/watch": true, "/chart": true, "/alert": true,
-	"/trigger": true, "/analyze": true,
+	"/trigger": true, "/analyze": true, "/backtest": true,
 }
 
 // editorFinishedMsg is sent when an external editor process completes.
@@ -820,6 +829,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case tea.KeyMsg:
+		// Drop leaked OSC terminal color responses (e.g. ]11;rgb:XXXX/XXXX/XXXX).
+		if oscResponseRe.MatchString(msg.String()) {
+			return m, nil
+		}
+
 		if msg.Type == tea.KeyCtrlC {
 			m.cleanup()
 			return m, tea.Quit
@@ -834,7 +848,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDialog(msg)
 		}
 
-		// ── Global hotkeys (Ctrl+K, Ctrl+T, Ctrl+O) ──
+		// ── Global hotkeys (Ctrl+K, Ctrl+T, Ctrl+O, F1) ──
 		switch msg.String() {
 		case "ctrl+k":
 			m.dialog = DialogState{Active: DialogPalette}
@@ -845,6 +859,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+o":
 			m.dialog = DialogState{Active: DialogModel}
+			return m, nil
+		case "f1":
+			m.dialog = DialogState{Active: DialogHelp}
 			return m, nil
 		}
 
@@ -967,7 +984,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.completionCandidates = nil
 		m.historyIndex = -1
-		input := strings.TrimSpace(m.textInput.Value())
+		input := strings.TrimSpace(oscLeakRe.ReplaceAllString(oscResponseRe.ReplaceAllString(m.textInput.Value(), ""), ""))
 		if input == "" {
 			return m, nil
 		}
@@ -1209,6 +1226,13 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Forward to textInput.
 	var cmd tea.Cmd
 	m.textInput, cmd = m.textInput.Update(msg)
+
+	// Strip leaked OSC color responses from the text buffer.
+	if val := m.textInput.Value(); oscLeakRe.MatchString(val) {
+		cleaned := oscLeakRe.ReplaceAllString(val, "")
+		m.textInput.SetValue(cleaned)
+		m.textInput.CursorEnd()
+	}
 
 	// Auto-show suggestions when typing a / command.
 	input := m.textInput.Value()

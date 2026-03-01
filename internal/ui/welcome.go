@@ -127,7 +127,7 @@ func RenderWelcome(width int, isConfigured bool) string {
 		helpHint = DimStyle.Render("Type ") +
 			CommandStyle.Render("/help") +
 			DimStyle.Render(" for commands, or ") +
-			CommandStyle.Render("?") +
+			CommandStyle.Render("F1") +
 			DimStyle.Render(" for keyboard shortcuts.")
 
 		tips := []string{
@@ -141,6 +141,11 @@ func RenderWelcome(width int, isConfigured bool) string {
 			"/theme to change the color scheme",
 			"Up/Down arrow cycles through command history",
 			"/man <command> shows detailed manual pages",
+			"/backtest presets to see ready-made strategies",
+			"/backtest run rsi-reversal BTC to run a preset",
+			"Ask Nick to backtest any strategy in plain English",
+			"/guide to learn the ropes interactively",
+			"/polymarket scan for prediction market analysis",
 		}
 		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
 			DimStyle.Render("Tip: "+tips[rand.Intn(len(tips))])
