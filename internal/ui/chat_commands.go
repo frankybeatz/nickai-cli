@@ -353,6 +353,24 @@ func (m Model) dispatchCommand(result commands.Result) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case commands.TypeConfig:
+		output := m.handleConfig(result.Args)
+		if output != "" {
+			m.addBotMessage(output)
+		}
+		m.updateJourneyContext(true)
+		m.updateViewport()
+		return m, nil
+
+	case commands.TypeMCP:
+		output := m.handleMCP(result.Args)
+		if output != "" {
+			m.addBotMessage(output)
+		}
+		m.updateJourneyContext(true)
+		m.updateViewport()
+		return m, nil
+
 	case commands.TypeExport:
 		output := m.handleExport(result.Args)
 		if output != "" {

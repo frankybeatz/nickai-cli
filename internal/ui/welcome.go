@@ -95,12 +95,14 @@ func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCar
 
 	stageOrdinal := guidance.StageOrdinal(stage)
 	stageLabel := guidance.StageLabel(stage)
+	xp, level, rank := guidance.Experience(ctx)
 	journey := lipgloss.NewStyle().
 		Foreground(ColorSecondary).
 		Bold(true).
 		Render(fmt.Sprintf("  Journey %d/7 · %s", stageOrdinal, stageLabel))
 	inner = append(inner, journey)
 	inner = append(inner, "  "+renderProgressBar(stageOrdinal, 7, 26))
+	inner = append(inner, DimStyle.Render(fmt.Sprintf("  Level %d · %s · %d XP", level, rank, xp)))
 	inner = append(inner, "")
 
 	// Dynamic content based on stage.
@@ -118,7 +120,8 @@ func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCar
 
 	done, total := guidance.JourneyProgress(ctx)
 	checklist := guidance.OnboardingChecklist(ctx)
-	inner = append(inner, renderMissionBlock(stage, checklist, done, total)...)
+	challenge := guidance.StageChallenge(stage, ctx)
+	inner = append(inner, renderMissionBlock(stage, checklist, challenge, done, total)...)
 
 	// Action cards.
 	if len(actions) > 0 {
@@ -194,7 +197,7 @@ func renderProgressBar(current int, total int, width int) string {
 	return "[" + strings.Repeat("=", filled) + strings.Repeat("-", width-filled) + "]"
 }
 
-func renderMissionBlock(stage guidance.Stage, checklist []guidance.ChecklistItem, done int, total int) []string {
+func renderMissionBlock(stage guidance.Stage, checklist []guidance.ChecklistItem, challenge guidance.Challenge, done int, total int) []string {
 	var lines []string
 	if total > 0 {
 		lines = append(lines, DimStyle.Render(fmt.Sprintf("  Mission progress: %d/%d complete", done, total)))
@@ -225,6 +228,11 @@ func renderMissionBlock(stage guidance.Stage, checklist []guidance.ChecklistItem
 		lines = append(lines, lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(fmt.Sprintf("  %d) %s", i+1, step.Label)))
 		lines = append(lines, CommandStyle.Render("     "+step.Command))
 	}
+	lines = append(lines, "")
+
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("  Boss challenge: "+challenge.Title))
+	lines = append(lines, DimStyle.Render("    "+challenge.Goal))
+	lines = append(lines, CommandStyle.Render("    "+challenge.Command)+"  "+DimStyle.Render(challenge.Reward))
 	lines = append(lines, "")
 
 	lines = append(lines, DimStyle.Render("  Talk naturally with Nick:"))

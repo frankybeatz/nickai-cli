@@ -30,6 +30,14 @@ type ChecklistItem struct {
 	Done    bool
 }
 
+// Challenge is a focused mission objective for the current stage.
+type Challenge struct {
+	Title   string
+	Goal    string
+	Command string
+	Reward  string
+}
+
 // StageContext holds the state needed to determine the user's journey stage.
 type StageContext struct {
 	HasAPIKey      bool
@@ -347,4 +355,115 @@ func JourneyProgress(ctx StageContext) (done int, total int) {
 		}
 	}
 	return done, len(items)
+}
+
+// Experience returns gamified progress values derived from current context.
+func Experience(ctx StageContext) (xp int, level int, rank string) {
+	if ctx.HasAPIKey {
+		xp += 120
+	}
+	if ctx.HasAIKey {
+		xp += 120
+	}
+	if ctx.MCPCount > 0 {
+		xp += minInt(ctx.MCPCount, 4) * 60
+	}
+	if ctx.TradeCount > 0 {
+		xp += minInt(ctx.TradeCount, 10) * 30
+	}
+	if ctx.HasAnalyzed {
+		xp += 100
+	}
+	if ctx.HasBacktested {
+		xp += 120
+	}
+	if ctx.MemoryCount > 0 {
+		xp += minInt(ctx.MemoryCount, 20) * 5
+	}
+
+	level = 1 + xp/180
+	if level > 10 {
+		level = 10
+	}
+
+	ranks := []string{
+		"Rookie", "Scout", "Navigator", "Strategist", "Operator",
+		"Commander", "Architect", "Tactician", "Oracle", "Legend",
+	}
+	idx := level - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(ranks) {
+		idx = len(ranks) - 1
+	}
+	return xp, level, ranks[idx]
+}
+
+// StageChallenge returns a single mission objective for the current stage.
+func StageChallenge(stage Stage, ctx StageContext) Challenge {
+	switch stage {
+	case StageFresh:
+		return Challenge{
+			Title:   "Boot Sequence",
+			Goal:    "Initialize your paper account and enter the terminal arena.",
+			Command: "/config init",
+			Reward:  "+120 XP",
+		}
+	case StageConfigured:
+		return Challenge{
+			Title:   "Summon Nick",
+			Goal:    "Unlock AI and request your first market briefing.",
+			Command: "/config set anthropic_key <key>",
+			Reward:  "+120 XP",
+		}
+	case StageAIReady:
+		return Challenge{
+			Title:   "Toolchain Upgrade",
+			Goal:    "Install free MCP tools to unlock live market intel.",
+			Command: "/mcp quick",
+			Reward:  "+180 XP",
+		}
+	case StageEquipped:
+		return Challenge{
+			Title:   "First Blood",
+			Goal:    "Open your first disciplined paper position.",
+			Command: "/buy BTC 0.01",
+			Reward:  "+150 XP",
+		}
+	case StageTrading:
+		return Challenge{
+			Title:   "Read the Tape",
+			Goal:    "Validate one position with technical analysis.",
+			Command: "/analyze BTC",
+			Reward:  "+100 XP",
+		}
+	case StageAnalyzing:
+		return Challenge{
+			Title:   "Prove the Edge",
+			Goal:    "Backtest a strategy before deploying capital logic.",
+			Command: "/backtest run rsi-reversal BTC",
+			Reward:  "+120 XP",
+		}
+	default:
+		cmd := "/polymarket scan"
+		goal := "Find one asymmetric setup and define risk before acting."
+		if len(ctx.TopPositions) > 0 {
+			cmd = "/analyze " + ctx.TopPositions[0]
+			goal = "Deep-dive your top position and refine exits with data."
+		}
+		return Challenge{
+			Title:   "Boss Fight",
+			Goal:    goal,
+			Command: cmd,
+			Reward:  "+80 XP",
+		}
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

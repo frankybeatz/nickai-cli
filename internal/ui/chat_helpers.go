@@ -328,19 +328,64 @@ func (m *Model) refreshGuidanceCaches() {
 		}
 	}
 
-	// Inject rich guidance context into the AI agent.
+	m.updateJourneyContext(true)
+}
+
+// updateJourneyContext recomputes journey context, emits stage-up cards, and
+// refreshes AI guidance context. When emitMilestone is true, stage increases
+// create an in-chat "quest complete" event.
+func (m *Model) updateJourneyContext(emitMilestone bool) {
+	ctx := m.buildGuidanceCtx()
+	stage := guidance.DetectStage(ctx)
+	prev := m.lastJourneyStage
+
+	m.guidanceCtx = ctx
+	m.welcomeDirty = true
+
+	if prev == "" {
+		m.lastJourneyStage = stage
+	} else if guidance.StageOrdinal(stage) > guidance.StageOrdinal(prev) {
+		m.lastJourneyStage = stage
+		m.welcomeDirty = true
+		if emitMilestone && !m.booting {
+			m.addBotMessage(renderStageUpCard(prev, stage, ctx))
+			m.updateViewport()
+		}
+	} else {
+		m.lastJourneyStage = stage
+	}
+
 	if m.agent != nil {
-		ctx := m.buildGuidanceCtx()
-		stage := guidance.DetectStage(ctx)
 		m.agent.SetGuidanceContext(buildGuidancePrompt(stage, ctx))
 	}
+}
+
+func renderStageUpCard(prev guidance.Stage, next guidance.Stage, ctx guidance.StageContext) string {
+	xp, level, rank := guidance.Experience(ctx)
+	ch := guidance.StageChallenge(next, ctx)
+
+	lines := []string{
+		BrandStyle.Render("  QUEST COMPLETE"),
+		lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
+			Render("  Stage Up: " + guidance.StageLabel(prev) + " → " + guidance.StageLabel(next)),
+		DimStyle.Render(fmt.Sprintf("  Level %d · %s · %d XP", level, rank, xp)),
+		"",
+		SecondaryStyle.Render("  New Mission: " + ch.Title),
+		DimStyle.Render("  " + ch.Goal),
+		CommandStyle.Render("  "+ch.Command) + "  " + DimStyle.Render(ch.Reward),
+	}
+	return strings.Join(lines, "\n")
 }
 
 // buildGuidancePrompt creates a context string telling Nick where the user is in their journey.
 func buildGuidancePrompt(stage guidance.Stage, ctx guidance.StageContext) string {
 	var sb strings.Builder
+	xp, level, rank := guidance.Experience(ctx)
+	ch := guidance.StageChallenge(stage, ctx)
 	sb.WriteString("USER JOURNEY CONTEXT:\n")
 	sb.WriteString(fmt.Sprintf("Stage: %s | Trades: %d | MCP servers: %d | Memories: %d\n", stage, ctx.TradeCount, ctx.MCPCount, ctx.MemoryCount))
+	sb.WriteString(fmt.Sprintf("Progression: Level %d (%s), %d XP\n", level, rank, xp))
+	sb.WriteString(fmt.Sprintf("Current mission: %s | Goal: %s | Action: %s\n", ch.Title, ch.Goal, ch.Command))
 
 	// Tell Nick what the user hasn't discovered yet — so he can naturally introduce features.
 	var unused []string

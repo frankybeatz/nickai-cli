@@ -298,11 +298,11 @@ type Model struct {
 	tickerTicking bool
 
 	// Trade confirmation state.
-	pendingTrade         *api.PlaceOrderRequest   // manual /buy /sell
-	pendingAITrade       *tools.ConfirmRequest     // AI-initiated place_order
-	pendingStrategySlice *strategy.TWAPStrategy    // TWAP slice awaiting confirmation
-	pendingSlicePrice    float64                   // price for pending strategy slice
-	pendingRationale     string                    // last AI message for journal capture
+	pendingTrade         *api.PlaceOrderRequest // manual /buy /sell
+	pendingAITrade       *tools.ConfirmRequest  // AI-initiated place_order
+	pendingStrategySlice *strategy.TWAPStrategy // TWAP slice awaiting confirmation
+	pendingSlicePrice    float64                // price for pending strategy slice
+	pendingRationale     string                 // last AI message for journal capture
 
 	// Risk guardrails (persistent — saved to ~/.nickai/risk.json).
 	riskLimits *risk.RiskLimits
@@ -328,6 +328,8 @@ type Model struct {
 
 	// Guidance context for smart next-step hints.
 	guidanceCtx guidance.StageContext
+	// Last detected journey stage (used for stage-up milestone events).
+	lastJourneyStage guidance.Stage
 
 	// Cached portfolio for top bar display.
 	cachedPortfolio *api.Portfolio
@@ -344,8 +346,8 @@ type Model struct {
 	nodeClient *node.Client
 
 	// Cached welcome screen content (avoids re-rendering + random flicker on every frame).
-	cachedWelcome      string
-	welcomeDirty       bool
+	cachedWelcome string
+	welcomeDirty  bool
 
 	// Force-quit: second Ctrl+C exits immediately.
 	quitAttempts int
@@ -354,9 +356,9 @@ type Model struct {
 	prevTickerPrices map[string]float64
 
 	// Websocket live price streaming.
-	binanceWS  *api.BinanceWS
-	wsPriceCh  chan wsPriceMsg
-	wsActive   bool
+	binanceWS *api.BinanceWS
+	wsPriceCh chan wsPriceMsg
+	wsActive  bool
 
 	// Watch mode.
 	watchMode    bool
@@ -496,7 +498,7 @@ func New() Model {
 		}
 	}
 
-	return Model{
+	model := Model{
 		textInput:     ti,
 		vimMode:       ModeInsert,
 		booting:       true,
@@ -505,21 +507,23 @@ func New() Model {
 		bootStartTime: time.Now(),
 		historyIndex:  -1,
 		inputHistory:  inputHistory,
-		alerts:       savedAlerts,
-		triggers:     savedTriggers,
-		riskLimits:   riskLimits,
-		strategies:   savedStrategies,
-		notifyConfig: notifyCfg,
-		automations:  savedAutomations,
-		cfg:          cfg,
-		client:       client,
-		agent:        agent,
-		toolRegistry: registry,
-		mcpManager:   mcpMgr,
-		credStore:    credStore,
-		wfStore:      wfStore,
-		memoryStore:  memStore,
+		alerts:        savedAlerts,
+		triggers:      savedTriggers,
+		riskLimits:    riskLimits,
+		strategies:    savedStrategies,
+		notifyConfig:  notifyCfg,
+		automations:   savedAutomations,
+		cfg:           cfg,
+		client:        client,
+		agent:         agent,
+		toolRegistry:  registry,
+		mcpManager:    mcpMgr,
+		credStore:     credStore,
+		wfStore:       wfStore,
+		memoryStore:   memStore,
 	}
+	model.updateJourneyContext(false)
+	return model
 }
 
 // cleanup shuts down MCP connections, saves history, and summarizes session.
@@ -646,7 +650,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		logoEnd := len(bootLogo)
 		taglineEnd := logoEnd + len(m.bootTagline)
 		checksEnd := taglineEnd + 1 + 4*2 // gap + 4 checks * 2 frames each
-		totalFrames := checksEnd + 2       // + ready message + buffer
+		totalFrames := checksEnd + 2      // + ready message + buffer
 
 		if m.bootFrame >= totalFrames {
 			m.booting = false
@@ -740,6 +744,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.streaming = false
 		m.streamCh = nil
+		origin := m.streamOrigin
 		// Clean up any escape sequences that leaked into the text input
 		// buffer during streaming (e.g. OSC color responses, ANSI fragments).
 		if val := m.textInput.Value(); val != "" {
@@ -763,6 +768,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Append origin-based next-step hints.
 				if hints := m.streamOriginHints(m.streamOrigin); hints != "" {
 					m.messages[len(m.messages)-1].content += hints
+				}
+				if origin == "analyze" {
+					m.cachedHasAnalyzed = true
+					m.updateJourneyContext(true)
+				}
+				if origin == "backtest" {
+					m.cachedHasBacktested = true
+					m.updateJourneyContext(true)
 				}
 			}
 		}
@@ -797,6 +810,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			content = ErrorStyle.Render("  Backtest failed: ") + msg.err.Error()
 		} else {
 			m.lastBacktestResult = msg.result
+			m.cachedHasBacktested = true
+			m.updateJourneyContext(true)
 			content = RenderBacktestCard(msg.result)
 		}
 		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
@@ -829,11 +844,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Refresh portfolio context after trades so AI knows the new state.
 		if msg.isTrade && m.agent != nil && m.client.IsConfigured() {
+			m.cachedTradeCount++
 			if portfolio, err := m.client.GetPortfolio(); err == nil {
+				m.cachedPortfolio = portfolio
 				if summary := buildPortfolioSummary(portfolio); summary != "" {
 					m.agent.SetPortfolioContext(summary)
 				}
 			}
+			m.updateJourneyContext(true)
 		}
 		m.updateViewport()
 		return m, nil
@@ -1151,6 +1169,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mcpManager = msg.manager
 			m.welcomeDirty = true
 			m.updatePlaceholder()
+			m.updateJourneyContext(true)
 		}
 		// Start periodic health check (every 5 minutes).
 		return m, tea.Tick(5*time.Minute, func(t time.Time) tea.Msg {
@@ -1180,6 +1199,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.welcomeDirty = true
+			m.updateJourneyContext(true)
 		}
 		// Re-schedule next health check.
 		return m, tea.Tick(5*time.Minute, func(t time.Time) tea.Msg {

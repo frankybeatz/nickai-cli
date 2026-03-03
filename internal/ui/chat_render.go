@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nickai/cli/internal/commands"
+	"github.com/nickai/cli/internal/guidance"
 )
 
 // renderBootSequence renders the animated boot screen.
@@ -140,6 +141,15 @@ func (m Model) renderStatusRight() string {
 			lipgloss.NewStyle().Foreground(ColorPrimary).Render("●")+
 				DimStyle.Render(fmt.Sprintf(" %d memories", len(m.memoryStore.Entries))))
 	}
+
+	// Journey level + mission completion snapshot.
+	ctx := m.guidanceCtx
+	if ctx.HasAPIKey != m.client.IsConfigured() || ctx.HasAIKey != (m.agent != nil) {
+		ctx = m.buildGuidanceCtx()
+	}
+	xp, lvl, rank := guidance.Experience(ctx)
+	done, total := guidance.JourneyProgress(ctx)
+	parts = append(parts, DimStyle.Render(fmt.Sprintf("LV%d %s %d/%d %dXP", lvl, rank, done, total, xp)))
 
 	// Active model.
 	if m.agent != nil {

@@ -168,3 +168,37 @@ func TestOnboardingChecklistAndProgress(t *testing.T) {
 		t.Fatalf("expected done=5, got %d", done)
 	}
 }
+
+func TestExperienceProgression(t *testing.T) {
+	early := StageContext{HasAPIKey: true}
+	full := StageContext{
+		HasAPIKey: true, HasAIKey: true, MCPCount: 3, TradeCount: 8,
+		HasAnalyzed: true, HasBacktested: true, MemoryCount: 10,
+	}
+
+	xpEarly, levelEarly, _ := Experience(early)
+	xpFull, levelFull, rankFull := Experience(full)
+
+	if xpFull <= xpEarly {
+		t.Fatalf("expected xp to increase with richer context: early=%d full=%d", xpEarly, xpFull)
+	}
+	if levelFull <= levelEarly {
+		t.Fatalf("expected level to increase: early=%d full=%d", levelEarly, levelFull)
+	}
+	if rankFull == "" {
+		t.Fatal("expected non-empty rank")
+	}
+}
+
+func TestStageChallengeNotEmpty(t *testing.T) {
+	stages := []Stage{
+		StageFresh, StageConfigured, StageAIReady, StageEquipped,
+		StageTrading, StageAnalyzing, StageAdvanced,
+	}
+	for _, s := range stages {
+		ch := StageChallenge(s, StageContext{TopPositions: []string{"BTC"}})
+		if ch.Title == "" || ch.Goal == "" || ch.Command == "" || ch.Reward == "" {
+			t.Fatalf("stage %s returned incomplete challenge: %+v", s, ch)
+		}
+	}
+}

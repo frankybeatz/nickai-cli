@@ -414,6 +414,8 @@ func (m *Model) handleAnalyze(args []string) (string, tea.Cmd) {
 				"Connect a paper trading account first with " +
 				CommandStyle.Render("/config init"), nil
 		}
+		m.cachedHasAnalyzed = true
+		m.updateJourneyContext(true)
 		symbol := strings.ToUpper(sub)
 		m.loading = true
 		m.loadingFrame = 0
@@ -435,6 +437,8 @@ func (m *Model) runAnalysisPreset(preset *backtest.AnalysisPreset, extraArgs str
 	if msg := m.requireAgent(); msg != "" {
 		return msg, nil
 	}
+	m.cachedHasAnalyzed = true
+	m.updateJourneyContext(true)
 
 	// Check MCP tool requirements.
 	if missing := m.checkMCPTools(preset.MCPTools); len(missing) > 0 {
