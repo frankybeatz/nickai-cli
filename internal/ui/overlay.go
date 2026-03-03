@@ -131,6 +131,7 @@ func renderHelpDialog(screenW, screenH int) string {
 		key("↑/↓") + dim("    History"),
 		key("Ctrl+K") + dim(" Palette"),
 		key("Ctrl+T") + dim(" Theme picker"),
+		key("Ctrl+O") + dim(" Model picker"),
 		key("F1") + dim("     This help"),
 	}
 

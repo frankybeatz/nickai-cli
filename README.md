@@ -142,17 +142,19 @@ what's the price of BTC?
 ## Configure
 
 ```
-/config init                               # auto-provision API key
-/config set api_key <your-papernick-key>   # or set manually
-/config set anthropic_key <your-key>       # Claude AI
-/config set minimax_key <your-key>         # free model
-/config test                               # verify connection
+/config init                                  # auto-provision API key
+/config set api_key <your-papernick-key>      # or set manually
+/config set anthropic_key <your-key>          # Claude AI (tools + streaming)
+/config set openrouter_key <your-key>         # GPT-4o, Gemini, DeepSeek, Llama
+/config set minimax_key <your-key>            # free model
+/config test                                  # verify connection
 ```
 
 Or set keys via environment:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export OPENROUTER_API_KEY=sk-or-...
 export MINIMAX_API_KEY=...
 ```
 
@@ -162,11 +164,21 @@ Config is stored at `~/.nickai/config.json`.
 
 Switch between AI providers with `/model`:
 
-| Model | Provider | Streaming | Free |
-|---|---|---|---|
-| `claude-sonnet` | Anthropic | Yes | No |
-| `claude-haiku` | Anthropic | Yes | No |
-| `minimax` | MiniMax | No | Yes |
+| Model | Provider | Streaming | Tools | Free |
+|---|---|---|---|---|
+| `claude-sonnet` | Anthropic | Yes | Yes | No |
+| `claude-haiku` | Anthropic | Yes | Yes | No |
+| `claude-opus` | Anthropic | Yes | Yes | No |
+| `gpt-4o` | OpenRouter | No | No | No |
+| `gemini-flash` | OpenRouter | No | No | No |
+| `deepseek-v3` | OpenRouter | No | No | No |
+| `deepseek-r1` | OpenRouter | No | No | Yes |
+| `llama-3.3` | OpenRouter | No | No | Yes |
+| `minimax` | MiniMax | No | No | Yes |
+
+Custom OpenRouter models: `/model openai/gpt-4o-mini` — any model slug with `/` is sent directly to OpenRouter.
+
+Tool use (trading, portfolio, MCP) requires an Anthropic model. Non-Anthropic models are chat-only.
 
 Multi-LLM consensus (`/consensus`) routes through OpenRouter and queries up to 10 models in parallel — no extra configuration needed.
 
@@ -339,8 +351,12 @@ See `examples/` for sample workflows.
 ## Security
 
 - Zero known vulnerabilities (`govulncheck` clean)
-- All API communication over HTTPS
-- Credentials stored with `0600` permissions, masked in output
+- All API communication over HTTPS (TLS 1.2+ enforced)
+- Credentials stored with `0600` permissions, directories `0700`, masked in output
+- Atomic file writes (write-to-temp-then-rename) prevent corruption on crash
+- Per-store mutex prevents race conditions on concurrent access
+- Tool results capped at 16KB, execution timeout 30s
+- `crypto/rand` for all ID generation
 - No telemetry, no auto-updates, no inbound network surface
 
 See [SECURITY.md](SECURITY.md) for the full security policy and audit details.
@@ -352,7 +368,7 @@ See [SECURITY.md](SECURITY.md) for the full security policy and audit details.
 - [Glamour](https://github.com/charmbracelet/glamour) — Markdown rendering
 - [PaperNick API](https://paper.getnick.ai) — Paper trading with real-time Pyth prices
 - [Anthropic Claude](https://anthropic.com) — AI agent with streaming tool use
-- [OpenRouter](https://openrouter.ai) — Multi-LLM consensus (10 models)
+- [OpenRouter](https://openrouter.ai) — Multi-LLM chat + consensus (GPT-4o, Gemini, DeepSeek, Llama)
 - [MiniMax](https://www.minimaxi.com) — Free LLM option
 - [Binance](https://binance.com) — OHLCV data for backtesting
 - [Alternative.me](https://alternative.me) — Fear & Greed Index

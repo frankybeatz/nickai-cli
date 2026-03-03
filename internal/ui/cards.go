@@ -1391,8 +1391,10 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/config", "Manage settings & keys"))
 	lines = append(lines, cmdLine("/mcp", "MCP server integrations"))
 	lines = append(lines, cmdLine("/credential", "Exchange API keys"))
-	lines = append(lines, cmdLine("/model <id>", "Switch AI model"))
+	lines = append(lines, cmdLine("/model <id>", "Switch AI model (9 models)"))
+	lines = append(lines, cmdLine("/model <slug>", "Custom OpenRouter model"))
 	lines = append(lines, cmdLine("/theme <name>", "Switch color theme"))
+	lines = append(lines, cmdLine("/vibe <name>", "Switch AI personality"))
 
 	lines = append(lines, sectionHeader("General"))
 	lines = append(lines, cmdLine("/help", "Show this help"))
