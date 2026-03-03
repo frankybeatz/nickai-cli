@@ -323,12 +323,8 @@ func (m *Model) updateViewport() {
 	var parts []string
 	parts = append(parts, welcome)
 	for _, msg := range m.messages {
-		// Apply left-border accent bars.
-		if msg.isUser {
-			parts = append(parts, UserMsgBar(msg.content))
-		} else {
-			parts = append(parts, BotMsgBar(msg.content))
-		}
+		// Render plain message blocks to avoid heavy highlighted containers.
+		parts = append(parts, msg.content)
 		parts = append(parts, "")
 	}
 	content := strings.Join(parts, "\n")

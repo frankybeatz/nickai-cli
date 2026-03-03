@@ -182,6 +182,12 @@ func (m Model) updateNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.Type {
+	case tea.KeyDown:
+		m.viewport.LineDown(1)
+		return m, nil
+	case tea.KeyUp:
+		m.viewport.LineUp(1)
+		return m, nil
 	case tea.KeyCtrlD:
 		m.viewport.HalfViewDown()
 		return m, nil

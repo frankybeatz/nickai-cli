@@ -12,6 +12,7 @@ import (
 	"github.com/nickai/cli/internal/credential"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/personality"
+	"github.com/nickai/cli/internal/sanitize"
 )
 
 // handleConfig processes /config subcommands.
@@ -278,18 +279,20 @@ func (m *Model) renderMCPList() string {
 	// Show connected servers.
 	if m.mcpManager != nil && m.mcpManager.ConnectionCount() > 0 {
 		for _, conn := range m.mcpManager.Connections() {
-			lines = append(lines, "  "+StatusIndicator("running")+BrandStyle.Render(conn.Name)+
+			connName := sanitizeInline(conn.Name, 128)
+			lines = append(lines, "  "+StatusIndicator("running")+BrandStyle.Render(connName)+
 				DimStyle.Render(fmt.Sprintf("  (%d tools)", len(conn.Tools))))
 			for _, t := range conn.Tools {
 				// Truncate long descriptions to keep the list readable.
-				desc := t.Description
-				if idx := strings.IndexAny(desc, ".\n"); idx > 0 {
+				toolName := sanitizeInline(t.Name, 128)
+				desc := sanitizeInline(t.Description, 240)
+				if idx := strings.Index(desc, "."); idx > 0 {
 					desc = desc[:idx]
 				}
 				if len(desc) > 60 {
 					desc = desc[:57] + "..."
 				}
-				lines = append(lines, "    "+CommandStyle.Render(t.Name)+
+				lines = append(lines, "    "+CommandStyle.Render(toolName)+
 					DimStyle.Render("  "+desc))
 			}
 		}
@@ -306,8 +309,10 @@ func (m *Model) renderMCPList() string {
 		lines = append(lines, "")
 		lines = append(lines, "  "+ErrorStyle.Render("Failed to connect:"))
 		for _, f := range m.mcpManager.Failed() {
+			name := sanitizeInline(f.Name, 128)
+			errMsg := sanitizeInline(f.Error, 220)
 			lines = append(lines, "  "+StatusIndicator("stopped")+
-				WarningStyle.Render(f.Name)+DimStyle.Render("  "+f.Error))
+				WarningStyle.Render(name)+DimStyle.Render("  "+errMsg))
 		}
 	}
 
@@ -324,6 +329,17 @@ func (m *Model) renderMCPList() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// sanitizeInline removes control/escape characters and compresses line breaks
+// for safe single-line terminal rendering.
+func sanitizeInline(s string, maxBytes int) string {
+	clean := sanitize.SanitizeMCPResult(s, maxBytes)
+	clean = strings.ReplaceAll(clean, "\n", " ")
+	clean = strings.ReplaceAll(clean, "\r", " ")
+	clean = strings.ReplaceAll(clean, "\t", " ")
+	clean = strings.TrimSpace(clean)
+	return clean
 }
 
 // handleCredential processes /credential subcommands.

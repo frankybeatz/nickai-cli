@@ -365,7 +365,7 @@ func renderStageUpCard(prev guidance.Stage, next guidance.Stage, ctx guidance.St
 	ch := guidance.StageChallenge(next, ctx)
 
 	lines := []string{
-		BrandStyle.Render("  QUEST COMPLETE"),
+		SecondaryStyle.Render("  Milestone reached"),
 		lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
 			Render("  Stage Up: " + guidance.StageLabel(prev) + " → " + guidance.StageLabel(next)),
 		DimStyle.Render(fmt.Sprintf("  Level %d · %s · %d XP", level, rank, xp)),

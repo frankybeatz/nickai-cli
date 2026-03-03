@@ -57,6 +57,20 @@ var oscLeakRe = regexp.MustCompile(`[\x1b\]]+[01]?1?;?r?g?b?:?[0-9a-fA-F]{0,4}/?
 // CSI (ESC[...), OSC (ESC]...), DCS (ESCP...), and other standard sequences.
 var ansiEscRe = regexp.MustCompile(`\x1b[\[\]PX^_][^\x1b]*`)
 
+// sanitizeStreamText strips terminal control/escape sequences from streamed text
+// so partial chunks cannot inject background colors or cursor control into the UI.
+func sanitizeStreamText(s string) string {
+	s = oscLeakRe.ReplaceAllString(oscResponseRe.ReplaceAllString(s, ""), "")
+	s = ansiEscRe.ReplaceAllString(s, "")
+	return strings.Map(func(r rune) rune {
+		// Keep newline/tab, drop other control characters.
+		if (r >= 0 && r < 32 && r != '\n' && r != '\t') || r == 127 {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 var knownCommands = []string{
 	"/help", "/status", "/orders", "/agents", "/templates",
 	"/buy", "/sell", "/price", "/watch", "/snapshot",
@@ -725,13 +739,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case aiStreamMsg:
 		if m.streaming && len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+			token := sanitizeStreamText(msg.token)
 			lastMsg := &m.messages[len(m.messages)-1]
 			if m.loading {
 				// First token: replace spinner with nick prefix.
 				m.loading = false
-				lastMsg.content = BotMsgStyle.Render("nick: ") + msg.token
+				lastMsg.content = BotMsgStyle.Render("nick: ") + token
 			} else {
-				lastMsg.content += msg.token
+				lastMsg.content += token
 			}
 			m.updateViewport()
 		}
@@ -759,14 +774,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
-			if msg.err != nil {
-				m.messages[len(m.messages)-1].content = ErrorStyle.Render("  AI error: ") + msg.err.Error()
-			} else {
-				rendered := renderMarkdown(msg.finalContent, m.width-8)
-				m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick:") + "\n" + rendered
-				// Append origin-based next-step hints.
-				if hints := m.streamOriginHints(m.streamOrigin); hints != "" {
+			if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+				if msg.err != nil {
+					m.messages[len(m.messages)-1].content = ErrorStyle.Render("  AI error: ") + msg.err.Error()
+				} else {
+					finalContent := sanitizeStreamText(msg.finalContent)
+					rendered := renderMarkdown(finalContent, m.width-8)
+					m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick:") + "\n" + rendered
+					// Append origin-based next-step hints.
+					if hints := m.streamOriginHints(m.streamOrigin); hints != "" {
 					m.messages[len(m.messages)-1].content += hints
 				}
 				if origin == "analyze" {
@@ -1468,9 +1484,7 @@ func (m Model) View() string {
 	}
 	leftPart := lipgloss.NewStyle().Width(leftWidth).Render(leftContent)
 	topBar := lipgloss.NewStyle().
-		Background(lipgloss.Color("#0D0D1A")).
-		Foreground(ColorPrimary).
-		Bold(true).
+		Foreground(ColorWhite).
 		Width(m.width).
 		Padding(0, 1).
 		Render(leftPart + statusRight)

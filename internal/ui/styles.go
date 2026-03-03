@@ -130,7 +130,7 @@ func rebuildStyles() {
 	WarningStyle = lipgloss.NewStyle().Foreground(ColorWarning)
 	UserMsgStyle = lipgloss.NewStyle().Foreground(ColorWhite).Bold(true)
 	BotMsgStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
-	CommandStyle = lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true)
+	CommandStyle = lipgloss.NewStyle().Foreground(ColorSecondary)
 	ActionCardStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorDim).
@@ -144,8 +144,8 @@ func rebuildStyles() {
 // UserMsgBar renders a message with a colored left border accent (user messages).
 func UserMsgBar(content string) string {
 	return lipgloss.NewStyle().
-		Border(lipgloss.ThickBorder(), false, false, false, true).
-		BorderForeground(ColorSecondary).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(ColorDim).
 		PaddingLeft(1).
 		Render(content)
 }
@@ -153,9 +153,8 @@ func UserMsgBar(content string) string {
 // BotMsgBar renders a message with a colored left border accent (bot messages).
 func BotMsgBar(content string) string {
 	return lipgloss.NewStyle().
-		Border(lipgloss.ThickBorder(), false, false, false, true).
-		BorderForeground(ColorPrimary).
-		Background(ColorCardBg).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(ColorDim).
 		PaddingLeft(1).
 		Render(content)
 }
@@ -163,7 +162,7 @@ func BotMsgBar(content string) string {
 // SystemMsgBar renders a message with a muted left border (system messages).
 func SystemMsgBar(content string) string {
 	return lipgloss.NewStyle().
-		Border(lipgloss.ThickBorder(), false, false, false, true).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(ColorDim).
 		PaddingLeft(1).
 		Render(content)
