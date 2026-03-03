@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/nickai/cli/internal/api"
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // RiskLimits defines portfolio risk guardrails.
@@ -56,14 +57,14 @@ func Save(limits *RiskLimits) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(limits, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return safefile.AtomicWrite(path, data, 0o600)
 }
 
 // IsEmpty returns true if no limits are set.

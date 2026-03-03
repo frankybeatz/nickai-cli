@@ -798,6 +798,7 @@ func RenderSnapshot(client *api.PapernickClient, width int) string {
 
 	// Fetch portfolio data.
 	var portfolioLines []string
+	portfolioLines = append(portfolioLines, "")
 	portfolioLines = append(portfolioLines, SecondaryStyle.Render("PORTFOLIO"))
 	portfolio, err := client.GetPortfolio()
 	if err != nil {
@@ -812,6 +813,7 @@ func RenderSnapshot(client *api.PapernickClient, width int) string {
 
 	// Fetch market data.
 	var marketLines []string
+	marketLines = append(marketLines, "")
 	marketLines = append(marketLines, SecondaryStyle.Render("MARKET"))
 	topSymbols := []string{"BTC", "ETH", "SOL", "DOGE"}
 	prices, err := client.GetPrices(topSymbols)
@@ -994,8 +996,8 @@ func RenderPnl(client *api.PapernickClient, width int) string {
 
 	var lines []string
 	lines = append(lines, "")
-	lines = append(lines, DimStyle.Render("Starting Balance:  ")+formatMoney(startingBalance))
-	lines = append(lines, DimStyle.Render("Current Balance:   ")+BrandStyle.Render(formatMoney(currentBalance)))
+	lines = append(lines, DimStyle.Render("  Starting Balance:  ")+formatMoney(startingBalance))
+	lines = append(lines, DimStyle.Render("  Current Balance:   ")+BrandStyle.Render(formatMoney(currentBalance)))
 
 	pnlStyle := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
 	pnlPrefix := "+"
@@ -1003,7 +1005,7 @@ func RenderPnl(client *api.PapernickClient, width int) string {
 		pnlStyle = lipgloss.NewStyle().Foreground(ColorError).Bold(true)
 		pnlPrefix = ""
 	}
-	lines = append(lines, DimStyle.Render("Total P&L:         ")+
+	lines = append(lines, DimStyle.Render("  Total P&L:         ")+
 		pnlStyle.Render(fmt.Sprintf("%s$%.2f (%s%.2f%%)", pnlPrefix, totalPnL, pnlPrefix, pnlPct)))
 
 	// Progress bar.
@@ -1298,6 +1300,8 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/price BTC ETH", "Live price quotes"))
 	lines = append(lines, cmdLine("/watch BTC ETH SOL", "Live price dashboard"))
 	lines = append(lines, cmdLine("/alert BTC > 100000", "Set a price alert"))
+	lines = append(lines, cmdLine("/alert list", "List active alerts"))
+	lines = append(lines, cmdLine("/alert clear", "Clear all alerts"))
 
 	lines = append(lines, sectionHeader("Portfolio"))
 	lines = append(lines, cmdLine("/status", "Positions & cash balance"))
@@ -1307,23 +1311,50 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/pnl", "Profit & loss summary"))
 	lines = append(lines, cmdLine("/history", "Trade journal with all orders"))
 	lines = append(lines, cmdLine("/chart BTC", "ASCII sparkline chart"))
+	lines = append(lines, cmdLine("/analytics", "Portfolio analytics & stats"))
 
-	lines = append(lines, sectionHeader("Agents & Automation"))
+	lines = append(lines, sectionHeader("Analysis & AI"))
+	lines = append(lines, cmdLine("/analyze BTC", "Technical analysis"))
+	lines = append(lines, cmdLine("/analyze sentiment ETH", "Sentiment analysis"))
+	lines = append(lines, cmdLine("/analyze whale BTC", "On-chain whale tracking"))
+	lines = append(lines, cmdLine("/analyze defi", "Top DeFi yields"))
+	lines = append(lines, cmdLine("/analyze presets", "List analysis presets"))
+	lines = append(lines, cmdLine("/analyze run <preset> <sym>", "Run an analysis preset"))
+	lines = append(lines, cmdLine("/consensus BTC", "Multi-LLM consensus (tier 1)"))
+	lines = append(lines, cmdLine("/consensus all BTC", "All model tiers consensus"))
+	lines = append(lines, cmdLine("/consensus budget BTC", "Free models only consensus"))
+	lines = append(lines, cmdLine("/consensus models", "Show model tiers & costs"))
+	lines = append(lines, cmdLine("/backtest presets", "List backtest strategies"))
+	lines = append(lines, cmdLine("/backtest run rsi-reversal BTC", "Run a backtest preset"))
+	lines = append(lines, cmdLine("/backtest activate <preset> <sym>", "Activate as live rule"))
+	lines = append(lines, cmdLine("/polymarket scan", "Prediction market analysis"))
+
+	lines = append(lines, sectionHeader("Strategy & Automation"))
+	lines = append(lines, cmdLine("/strategy twap ETH buy $2000 4h", "Create TWAP strategy"))
+	lines = append(lines, cmdLine("/strategy list", "List all strategies"))
+	lines = append(lines, cmdLine("/strategy cancel <id>", "Cancel a running strategy"))
+	lines = append(lines, cmdLine("/trigger add BTC < 60000 sell 0.5", "Conditional trigger"))
+	lines = append(lines, cmdLine("/trigger list", "List active triggers"))
+	lines = append(lines, cmdLine("/trigger remove <id>", "Remove a trigger"))
+	lines = append(lines, cmdLine("/trigger clear", "Clear all triggers"))
+	lines = append(lines, cmdLine("/auto list", "View automation rules"))
+	lines = append(lines, cmdLine("/auto pause <id>", "Pause an automation rule"))
+	lines = append(lines, cmdLine("/auto resume <id>", "Resume a paused rule"))
+	lines = append(lines, cmdLine("/auto remove <id>", "Delete an automation rule"))
+	lines = append(lines, cmdLine("/risk set max-order 5000", "Set max order size"))
+	lines = append(lines, cmdLine("/risk set daily-loss 5", "Set daily loss limit %"))
+	lines = append(lines, cmdLine("/risk show", "View current risk limits"))
+	lines = append(lines, cmdLine("/risk clear", "Remove all risk limits"))
+	lines = append(lines, cmdLine("/notify set desktop on", "Toggle desktop alerts"))
+	lines = append(lines, cmdLine("/notify set webhook <url>", "Set webhook URL"))
+	lines = append(lines, cmdLine("/notify test", "Send test notification"))
+
+	lines = append(lines, sectionHeader("Agents & Workflows"))
 	lines = append(lines, cmdLine("/agents", "List your trading agents"))
 	lines = append(lines, cmdLine("/templates", "Browse marketplace templates"))
 	lines = append(lines, cmdLine("/workflow", "Manage automation workflows"))
-	lines = append(lines, cmdLine("/trigger add BTC < 60000 sell 0.5", "Conditional trade"))
-	lines = append(lines, cmdLine("/risk set max-order 5000", "Risk guardrails"))
-	lines = append(lines, cmdLine("/strategy twap ETH buy $2000 4h", "TWAP strategy"))
-	lines = append(lines, cmdLine("/auto list", "Automation rules"))
-	lines = append(lines, cmdLine("/notify set desktop on", "Desktop notifications"))
-	lines = append(lines, cmdLine("/analytics", "Portfolio analytics"))
-	lines = append(lines, cmdLine("/analyze BTC", "Market analysis"))
-	lines = append(lines, cmdLine("/backtest presets", "Backtest preset strategies"))
-	lines = append(lines, cmdLine("/backtest run rsi-reversal BTC", "Run a backtest preset"))
-	lines = append(lines, cmdLine("/polymarket scan", "Prediction market analysis"))
-	lines = append(lines, cmdLine("/guide", "Interactive guide"))
 	lines = append(lines, cmdLine("/logs <workflow>", "Workflow execution logs"))
+	lines = append(lines, cmdLine("/guide", "Interactive guide"))
 
 	lines = append(lines, sectionHeader("Prediction Markets"))
 	lines = append(lines, cmdLine("/markets", "Trending prediction markets"))
@@ -1350,12 +1381,10 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/odds Lakers vs Celtics", "Betting odds lookup"))
 	lines = append(lines, cmdLine("/lines Super Bowl", "Line movement tracker"))
 
-	lines = append(lines, sectionHeader("AI & Memory"))
+	lines = append(lines, sectionHeader("Memory"))
 	lines = append(lines, cmdLine("/memory", "View saved memories"))
 	lines = append(lines, cmdLine("/memory clear", "Clear all memories"))
-	lines = append(lines, cmdLine("/consensus BTC", "Multi-LLM consensus"))
-	lines = append(lines, cmdLine("/analyze presets", "List analysis presets"))
-	lines = append(lines, cmdLine("/analyze run <preset> <sym>", "Run an analysis preset"))
+	lines = append(lines, cmdLine("/memory remove <id>", "Remove a specific memory"))
 
 	lines = append(lines, sectionHeader("Setup & Integrations"))
 	lines = append(lines, cmdLine("/config init", "Create account & API key"))
@@ -1421,10 +1450,11 @@ func renderOrderStatus(s string) string {
 }
 
 func padRight(s string, n int) string {
-	if len(s) >= n {
+	w := lipgloss.Width(s)
+	if w >= n {
 		return s
 	}
-	return s + strings.Repeat(" ", n-len(s))
+	return s + strings.Repeat(" ", n-w)
 }
 
 // --- Trigger rendering ---

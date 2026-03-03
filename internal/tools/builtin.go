@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -1092,13 +1093,13 @@ func makeBacktestStrategy() ToolFunc {
 	}
 }
 
-// randomToolID generates a random alphanumeric string.
+// randomToolID generates a random alphanumeric string using crypto/rand.
 func randomToolID(n int) string {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, n)
+	crand.Read(b)
 	for i := range b {
-		b[i] = chars[time.Now().UnixNano()%int64(len(chars))]
-		time.Sleep(time.Nanosecond)
+		b[i] = chars[b[i]%byte(len(chars))]
 	}
 	return string(b)
 }

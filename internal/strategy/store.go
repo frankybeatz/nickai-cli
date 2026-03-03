@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // TWAPStrategy represents a time-weighted average price execution strategy.
@@ -61,18 +63,22 @@ func Save(strategies []TWAPStrategy) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(strategies, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return safefile.AtomicWrite(path, data, 0o600)
 }
 
 // Add appends a strategy and saves.
 func Add(s TWAPStrategy) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	strategies, err := Load()
 	if err != nil {
 		return err
@@ -98,6 +104,10 @@ func Active() ([]TWAPStrategy, error) {
 
 // Cancel sets a strategy's status to "cancelled" and saves.
 func Cancel(id string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	strategies, err := Load()
 	if err != nil {
 		return err
@@ -118,6 +128,10 @@ func Cancel(id string) error {
 
 // MarkSliceExecuted records a completed slice and advances the next slice time.
 func MarkSliceExecuted(id, orderID string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	strategies, err := Load()
 	if err != nil {
 		return err

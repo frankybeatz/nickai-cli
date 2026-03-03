@@ -30,17 +30,9 @@ type DialogState struct {
 }
 
 // overlayFrame renders a floating dialog frame with a drop shadow.
-// title is shown in the top border. content is the inner body.
-// width and height are the outer dialog dimensions.
+// content is the inner body. width and height are the outer dialog dimensions.
 // screenW and screenH are the full terminal dimensions for centering.
-func overlayFrame(title, content string, width, height, screenW, screenH int) string {
-	titleRendered := ""
-	if title != "" {
-		titleRendered = lipgloss.NewStyle().
-			Foreground(ColorPrimary).Bold(true).
-			Render(" " + title + " ")
-	}
-
+func overlayFrame(content string, width, height, screenW, screenH int) string {
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorSecondary).
@@ -53,27 +45,6 @@ func overlayFrame(title, content string, width, height, screenW, screenH int) st
 		BorderRight(true)
 
 	rendered := box.Render(content)
-
-	// Inject title into top border (replace center section).
-	if titleRendered != "" {
-		lines := strings.Split(rendered, "\n")
-		if len(lines) > 0 {
-			border := lines[0]
-			titleWidth := lipgloss.Width(titleRendered)
-			borderWidth := lipgloss.Width(border)
-			if titleWidth+4 < borderWidth {
-				// Place title 2 chars from the left edge of the border.
-				insertAt := 3
-				leftBorder := string([]rune(border)[:insertAt])
-				rightStart := insertAt + titleWidth
-				if rightStart < len([]rune(border)) {
-					rightBorder := string([]rune(border)[rightStart:])
-					lines[0] = leftBorder + titleRendered + rightBorder
-				}
-			}
-		}
-		rendered = strings.Join(lines, "\n")
-	}
 
 	// Drop shadow using ░ character.
 	shadowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#333333"))
@@ -149,72 +120,72 @@ func renderHelpDialog(screenW, screenH int) string {
 	col1 := []string{
 		col1Header,
 		"",
-		key("Esc") + dim("     Normal mode"),
-		key("i/a/o") + dim("   Insert mode"),
-		key(":") + dim("       Command mode"),
-		key("/") + dim("       Search mode"),
-		key("j/k") + dim("     Scroll ↑/↓"),
-		key("d/u") + dim("     Half page"),
-		key("gg/G") + dim("    Top / bottom"),
-		key("Tab") + dim("     Complete cmd"),
-		key("↑/↓") + dim("     History"),
-		key("Ctrl+K") + dim("  Palette"),
-		key("Ctrl+T") + dim("  Theme"),
-		key("F1") + dim("      Help"),
+		key("Esc") + dim("    Normal mode"),
+		key("i/a/o") + dim("  Insert mode"),
+		key(":") + dim("      Command mode"),
+		key("/") + dim("      Search mode"),
+		key("j/k") + dim("    Scroll ↑/↓"),
+		key("d/u") + dim("    Half page"),
+		key("gg/G") + dim("   Top / bottom"),
+		key("Tab") + dim("    Autocomplete"),
+		key("↑/↓") + dim("    History"),
+		key("Ctrl+K") + dim(" Palette"),
+		key("Ctrl+T") + dim(" Theme picker"),
+		key("F1") + dim("     This help"),
 	}
 
 	col2 := []string{
 		col2Header,
 		"",
-		key("/buy") + dim("       Market buy"),
-		key("/sell") + dim("      Limit sell"),
-		key("/price") + dim("     Price quotes"),
-		key("/watch") + dim("     Live dashboard"),
-		key("/chart") + dim("     Sparkline"),
-		key("/alert") + dim("     Price alerts"),
-		key("/status") + dim("    Portfolio"),
-		key("/orders") + dim("    Recent trades"),
-		key("/pnl") + dim("       P&L summary"),
-		key("/snapshot") + dim("  Full dashboard"),
-		key("/analyze") + dim("   Analysis"),
-		key("/backtest") + dim("  Backtest"),
+		key("/buy") + dim("      Market buy"),
+		key("/sell") + dim("     Market sell"),
+		key("/price") + dim("    Quotes"),
+		key("/watch") + dim("    Live ticker"),
+		key("/chart") + dim("    Sparkline"),
+		key("/alert") + dim("    Price alert"),
+		key("/status") + dim("   Portfolio"),
+		key("/orders") + dim("   Recent trades"),
+		key("/pnl") + dim("      P&L summary"),
+		key("/snapshot") + dim(" Dashboard"),
+		key("/analyze") + dim("  Analysis"),
+		key("/backtest") + dim(" Backtest"),
 	}
 
 	col3 := []string{
 		col3Header,
 		"",
-		key("/memory") + dim("     AI memory"),
-		key("/consensus") + dim("  LLM consensus"),
-		key("/polymarket") + dim(" Pred. markets"),
-		key("/analytics") + dim("  Analytics"),
-		key("/risk") + dim("       Guardrails"),
-		key("/auto") + dim("       Automation"),
-		key("/trigger") + dim("    Cond. trades"),
-		key("/strategy") + dim("   Strategies"),
-		key("/config") + dim("     Settings"),
-		key("/mcp") + dim("        MCP servers"),
-		key("/guide") + dim("      Guide"),
-		key("/man") + dim("        Manual"),
+		key("/memory") + dim("    Memories"),
+		key("/consensus") + dim(" Consensus"),
+		key("/polymarket") + dim("Predictions"),
+		key("/analytics") + dim(" Stats"),
+		key("/risk") + dim("      Guardrails"),
+		key("/auto") + dim("      Automation"),
+		key("/trigger") + dim("   Triggers"),
+		key("/strategy") + dim("  Strategies"),
+		key("/config") + dim("    Settings"),
+		key("/mcp") + dim("       MCP servers"),
+		key("/guide") + dim("     Guide"),
+		key("/man") + dim("       Manual"),
 	}
 
 	col4 := []string{
 		col4Header,
 		"",
-		key("/connect") + dim("   Exchanges"),
-		key("/balances") + dim("  All balances"),
-		key("/positions") + dim(" All positions"),
-		key("/markets") + dim("   Pred. markets"),
-		key("/stock") + dim("     Equities"),
-		key("/screen") + dim("    Screener"),
-		key("/wallet") + dim("    Onchain"),
-		key("/swap") + dim("      DEX swap"),
-		key("/gas") + dim("       Gas prices"),
-		key("/odds") + dim("      Betting odds"),
-		key("/lines") + dim("     Line moves"),
-		key("/funding") + dim("   Funding rates"),
+		key("/connect") + dim("  Exchanges"),
+		key("/balances") + dim(" Balances"),
+		key("/positions") + dim("Positions"),
+		key("/markets") + dim("  Markets"),
+		key("/stock") + dim("    Equities"),
+		key("/screen") + dim("   Screener"),
+		key("/wallet") + dim("   Onchain"),
+		key("/swap") + dim("     DEX swap"),
+		key("/gas") + dim("      Gas prices"),
+		key("/odds") + dim("     Odds"),
+		key("/lines") + dim("    Lines"),
+		key("/funding") + dim("  Funding"),
 	}
 
-	colWidth := 24
+	colWidth := 23
 	maxRows := max(len(col1), max(len(col2), max(len(col3), len(col4))))
 	var rows []string
 	for i := 0; i < maxRows; i++ {
@@ -232,21 +203,22 @@ func renderHelpDialog(screenW, screenH int) string {
 			c4 = col4[i]
 		}
 
-		c1s := lipgloss.NewStyle().Width(colWidth).Render(c1)
-		c2s := lipgloss.NewStyle().Width(colWidth).Render(c2)
-		c3s := lipgloss.NewStyle().Width(colWidth).Render(c3)
-		c4s := lipgloss.NewStyle().Width(colWidth).Render(c4)
+		c1s := lipgloss.NewStyle().Width(colWidth).MaxWidth(colWidth).Render(c1)
+		c2s := lipgloss.NewStyle().Width(colWidth).MaxWidth(colWidth).Render(c2)
+		c3s := lipgloss.NewStyle().Width(colWidth).MaxWidth(colWidth).Render(c3)
+		c4s := lipgloss.NewStyle().Width(colWidth).MaxWidth(colWidth).Render(c4)
 
 		rows = append(rows, c1s+" "+c2s+" "+c3s+" "+c4s)
 	}
 
-	footer := "\n" + DimStyle.Render("Press any key to close  •  /help for full list")
+	title := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Help") + "\n"
+	footer := "\n" + DimStyle.Render("Press any key to close")
 
-	content := strings.Join(rows, "\n") + footer
+	content := title + strings.Join(rows, "\n") + footer
 
-	dialogW := min(screenW-4, 104)
-	dialogH := maxRows + 6
-	return overlayFrame("Help", content, dialogW, dialogH, screenW, screenH)
+	dialogW := min(screenW-4, 100)
+	dialogH := maxRows + 7
+	return overlayFrame(content, dialogW, dialogH, screenW, screenH)
 }
 
 // ── Theme Picker Dialog ──
@@ -279,11 +251,12 @@ func renderThemeDialog(cursor int, screenW, screenH int) string {
 
 	footer := "\n" + DimStyle.Render("↑/↓ navigate  Enter select  Esc cancel")
 
-	content := strings.Join(rows, "\n") + footer
+	title := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Theme") + "\n"
+	content := title + strings.Join(rows, "\n") + footer
 
 	dialogW := min(screenW-4, 44)
-	dialogH := len(names) + 6
-	return overlayFrame("Theme", content, dialogW, dialogH, screenW, screenH)
+	dialogH := len(names) + 7
+	return overlayFrame(content, dialogW, dialogH, screenW, screenH)
 }
 
 // ── Model Picker Dialog ──
@@ -314,18 +287,19 @@ func renderModelDialog(cursor int, agent *ai.Agent, screenW, screenH int) string
 			freeTag = lipgloss.NewStyle().Foreground(ColorPrimary).Render(" [free]")
 		}
 
-		row := prefix + nameStyle.Render(fmt.Sprintf("%-16s", m.ID)) +
-			DimStyle.Render(string(m.Provider)) + freeTag + current
+		row := prefix + nameStyle.Render(fmt.Sprintf("%-18s", m.ID)) +
+			DimStyle.Render(fmt.Sprintf("%-12s", string(m.Provider))) + freeTag + current
 		rows = append(rows, row)
 	}
 
 	footer := "\n" + DimStyle.Render("↑/↓ navigate  Enter select  Esc cancel")
 
-	content := strings.Join(rows, "\n") + footer
+	title := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Model") + "\n"
+	content := title + strings.Join(rows, "\n") + footer
 
-	dialogW := min(screenW-4, 48)
-	dialogH := len(models) + 6
-	return overlayFrame("Model", content, dialogW, dialogH, screenW, screenH)
+	dialogW := min(screenW-4, 58)
+	dialogH := len(models) + 7
+	return overlayFrame(content, dialogW, dialogH, screenW, screenH)
 }
 
 // ── Command Palette Dialog ──
@@ -394,15 +368,16 @@ func renderPaletteDialog(cursor, scrollOffset int, filter string, filtered []str
 		rows = append(rows, DimStyle.Render("  "+scrollHint))
 	}
 
+	title := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Commands") + "\n"
 	footer := "\n" + DimStyle.Render("↑/↓ navigate  Enter run  Esc cancel")
-	content := strings.Join(rows, "\n") + footer
+	content := title + strings.Join(rows, "\n") + footer
 
 	dialogW := min(screenW-4, 52)
-	dialogH := visibleCount + 7
+	dialogH := visibleCount + 8
 	if len(filtered) > maxVisible {
 		dialogH++ // extra line for scroll hint
 	}
-	return overlayFrame("Commands", content, dialogW, dialogH, screenW, screenH)
+	return overlayFrame(content, dialogW, dialogH, screenW, screenH)
 }
 
 // paletteCommands is the full list for the command palette: "cmd|description".

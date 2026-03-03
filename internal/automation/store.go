@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // RuleType identifies what drives the automation.
@@ -116,19 +118,26 @@ func Save(rules []AutoRule) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(rules, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return safefile.AtomicWrite(path, data, 0o600)
 }
 
 // Add appends a new rule and saves.
 func Add(rule AutoRule) error {
-	rules, _ := Load()
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
+	rules, err := Load()
+	if err != nil {
+		return err
+	}
 	rules = append(rules, rule)
 	return Save(rules)
 }
@@ -150,6 +159,10 @@ func Active() ([]AutoRule, error) {
 
 // Pause sets a rule to paused by ID prefix match.
 func Pause(idPrefix string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	rules, err := Load()
 	if err != nil {
 		return err
@@ -170,6 +183,10 @@ func Pause(idPrefix string) error {
 
 // Resume sets a paused rule back to active by ID prefix match.
 func Resume(idPrefix string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	rules, err := Load()
 	if err != nil {
 		return err
@@ -191,6 +208,10 @@ func Resume(idPrefix string) error {
 
 // Remove deletes a rule by ID prefix match.
 func Remove(idPrefix string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	rules, err := Load()
 	if err != nil {
 		return err
@@ -212,6 +233,10 @@ func Remove(idPrefix string) error {
 
 // MarkFired increments the fire count, updates last-fired and next-check.
 func MarkFired(idPrefix string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	rules, err := Load()
 	if err != nil {
 		return err

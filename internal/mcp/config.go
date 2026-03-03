@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // MCPConfig holds the full ~/.nickai/mcp.json configuration.
@@ -66,19 +68,26 @@ func saveMCPConfig(cfg *MCPConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return safefile.AtomicWrite(path, data, 0o600)
 }
 
 // AddServerToConfig adds a registry entry to ~/.nickai/mcp.json.
-func AddServerToConfig(entry *RegistryEntry) error {
+// extraEnv contains KEY=VALUE pairs provided inline by the user;
+// these take priority over os.Getenv lookups.
+func AddServerToConfig(entry *RegistryEntry, extraEnv map[string]string) error {
+	path, _ := mcpConfigPath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	cfg, err := LoadMCPConfig()
 	if err != nil {
 		return err
 	}
 	env := map[string]string{}
 	for _, key := range entry.EnvKeys {
-		val := os.Getenv(key)
-		if val != "" {
+		if v, ok := extraEnv[key]; ok {
+			env[key] = v
+		} else if val := os.Getenv(key); val != "" {
 			env[key] = val
 		}
 	}
@@ -92,6 +101,10 @@ func AddServerToConfig(entry *RegistryEntry) error {
 
 // RemoveServerFromConfig removes a server from ~/.nickai/mcp.json.
 func RemoveServerFromConfig(name string) error {
+	path, _ := mcpConfigPath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	cfg, err := LoadMCPConfig()
 	if err != nil {
 		return err

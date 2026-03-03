@@ -104,7 +104,7 @@ func NewClient(cfg *config.Config) *PapernickClient {
 		baseURL: cfg.BaseURL,
 		apiKey:  cfg.APIKey,
 		http: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 	}
 }
@@ -211,11 +211,11 @@ func (c *PapernickClient) GetOrders() ([]Order, error) {
 	return orders, c.doGet("/orders", &orders)
 }
 
-// NormalizeSymbol uppercases and appends USDT if the symbol looks like a base
-// asset (short ticker) rather than a full trading pair.
+// NormalizeSymbol uppercases and appends USDT if the symbol doesn't already
+// have a quote suffix (USDT, USDC, USD).
 func NormalizeSymbol(s string) string {
-	sym := strings.ToUpper(s)
-	if len(sym) > 5 {
+	sym := strings.ToUpper(strings.TrimSpace(s))
+	if strings.HasSuffix(sym, "USDT") || strings.HasSuffix(sym, "USDC") || strings.HasSuffix(sym, "USD") {
 		return sym
 	}
 	return sym + "USDT"

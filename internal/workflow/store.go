@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // NodeType represents the type of a workflow node.
@@ -101,7 +103,7 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return safefile.AtomicWrite(path, data, 0600)
 }
 
 // Get returns a workflow by name, or nil if not found.

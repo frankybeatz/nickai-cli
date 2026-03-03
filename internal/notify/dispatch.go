@@ -3,12 +3,15 @@ package notify
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // Config holds notification preferences.
@@ -52,14 +55,14 @@ func Save(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return safefile.AtomicWrite(path, data, 0o600)
 }
 
 // IsEmpty returns true if no notification channels are configured.
@@ -108,7 +111,7 @@ func escapeAppleScript(s string) string {
 }
 
 // sendWebhook POSTs a JSON payload to the configured URL.
-func sendWebhook(url, title, body string) {
+func sendWebhook(url, title, body string) error {
 	payload := map[string]string{
 		"title":     title,
 		"body":      body,
@@ -116,8 +119,16 @@ func sendWebhook(url, title, body string) {
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return err
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	_, _ = client.Post(url, "application/json", bytes.NewReader(data))
+	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("webhook returned %d", resp.StatusCode)
+	}
+	return nil
 }

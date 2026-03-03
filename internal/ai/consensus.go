@@ -37,7 +37,7 @@ type ConsensusConfig struct {
 
 // Tier1Models are the frontier defaults — fast, high-quality consensus panel.
 var Tier1Models = []string{
-	"anthropic/claude-sonnet-4.5",
+	"anthropic/claude-sonnet-4.6",
 	"openai/gpt-5.2",
 	"deepseek/deepseek-v3.2",
 	"google/gemini-3-pro-preview",
@@ -208,7 +208,8 @@ func parseVerdict(response string) (verdict, confidence, reasoning string) {
 
 	confRe := regexp.MustCompile(`(?i)\b(High|Medium|Low)\b`)
 	if m := confRe.FindString(response); m != "" {
-		confidence = strings.Title(strings.ToLower(m))
+		low := strings.ToLower(m)
+		confidence = strings.ToUpper(low[:1]) + low[1:]
 	}
 
 	reasoning = "Extracted from unstructured response"

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // Credential holds an exchange API credential.
@@ -79,7 +81,7 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return safefile.AtomicWrite(path, data, 0600)
 }
 
 // Add inserts a credential, replacing any existing one with the same name.

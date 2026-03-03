@@ -265,7 +265,7 @@ func Run(strat Strategy) (*Result, error) {
 		equityCurve = append(equityCurve, equity)
 	}
 
-	result := computeMetrics(strat, trades, equityCurve)
+	result := computeMetrics(strat, trades, equityCurve, interval)
 	return result, nil
 }
 
@@ -338,7 +338,7 @@ func getIndicatorValue(indicator string, snap indicatorSnapshot) float64 {
 }
 
 // computeMetrics calculates backtest result metrics.
-func computeMetrics(strat Strategy, trades []Trade, equityCurve []float64) *Result {
+func computeMetrics(strat Strategy, trades []Trade, equityCurve []float64, interval string) *Result {
 	result := &Result{
 		Strategy:    strat.Name,
 		Symbol:      strat.Symbol,
@@ -388,8 +388,8 @@ func computeMetrics(strat Strategy, trades []Trade, equityCurve []float64) *Resu
 	// Max drawdown from equity curve.
 	result.MaxDrawdown = maxDrawdown(equityCurve)
 
-	// Sharpe ratio (annualized, assuming daily returns).
-	result.SharpeRatio = sharpeRatio(equityCurve)
+	// Sharpe ratio (annualized based on candle interval).
+	result.SharpeRatio = sharpeRatio(equityCurve, interval)
 
 	return result
 }
@@ -414,7 +414,8 @@ func maxDrawdown(curve []float64) float64 {
 }
 
 // sharpeRatio calculates the annualized Sharpe ratio from an equity curve.
-func sharpeRatio(curve []float64) float64 {
+// candleInterval is the candle size ("1d", "4h", "1h") for correct annualization.
+func sharpeRatio(curve []float64, candleInterval string) float64 {
 	if len(curve) < 2 {
 		return 0
 	}
@@ -437,15 +438,26 @@ func sharpeRatio(curve []float64) float64 {
 		diff := r - mean
 		variance += diff * diff
 	}
-	variance /= float64(len(returns))
+	// Use sample variance (N-1) for unbiased estimate.
+	if len(returns) > 1 {
+		variance /= float64(len(returns) - 1)
+	}
 	stddev := math.Sqrt(variance)
 
 	if stddev == 0 {
 		return 0
 	}
 
-	// Annualize assuming daily candles (~252 trading days).
-	return (mean / stddev) * math.Sqrt(252)
+	// Candles per year depends on interval (crypto trades 365 days).
+	periodsPerYear := 365.0 // daily
+	switch candleInterval {
+	case "1h":
+		periodsPerYear = 365 * 24
+	case "4h":
+		periodsPerYear = 365 * 6
+	}
+
+	return (mean / stddev) * math.Sqrt(periodsPerYear)
 }
 
 // needsFearGreed checks if any condition references the fear_greed indicator.

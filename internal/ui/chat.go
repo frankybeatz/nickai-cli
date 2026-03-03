@@ -1,9 +1,9 @@
 package ui
 
 import (
+	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/rand"
 	"os"
 	"os/exec"
 	"regexp"
@@ -24,13 +24,16 @@ import (
 	"github.com/nickai/cli/internal/commands"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
+	"github.com/nickai/cli/internal/guidance"
 	"github.com/nickai/cli/internal/indicators"
 	"github.com/nickai/cli/internal/journal"
 	"github.com/nickai/cli/internal/market"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/memory"
+	"github.com/nickai/cli/internal/personality"
 	"github.com/nickai/cli/internal/notify"
 	"github.com/nickai/cli/internal/risk"
+	"github.com/nickai/cli/internal/safefile"
 	"github.com/nickai/cli/internal/strategy"
 	"github.com/nickai/cli/internal/tools"
 	"github.com/nickai/cli/internal/trigger"
@@ -53,9 +56,9 @@ const (
 // (e.g. ESC]11;rgb:XXXX/XXXX/XXXX BEL) delivered as a single key event.
 var oscResponseRe = regexp.MustCompile(`\x1b?\]1[01];rgb:[0-9a-fA-F/]+\x07?`)
 
-// oscLeakRe matches OSC color fragments that leak into the text input buffer
-// character-by-character (e.g. "gb:213d/2743/33e7" or "]11;rgb:213d/2743/33e7").
-var oscLeakRe = regexp.MustCompile(`\x1b?\]?1?[01]?;?r?gb:[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}/[0-9a-fA-F]{2,4}\x07?`)
+// oscLeakRe matches OSC color fragments that leak into the text input buffer.
+// Requires ESC or ] prefix to avoid false positives on valid hex user input.
+var oscLeakRe = regexp.MustCompile(`[\x1b\]]+[01]?1?;?r?g?b?:?[0-9a-fA-F]{0,4}/?[0-9a-fA-F]{4}/[0-9a-fA-F]{4}\x07?`)
 
 var knownCommands = []string{
 	"/help", "/status", "/orders", "/agents", "/templates",
@@ -70,6 +73,8 @@ var knownCommands = []string{
 	"/connect", "/balances", "/bal", "/positions", "/pos",
 	"/markets", "/bet", "/wallet", "/swap", "/gas",
 	"/stock", "/screen", "/odds", "/lines", "/funding",
+	"/dashboard", "/dash",
+	"/vibe",
 }
 
 var knownSymbols = []string{
@@ -162,6 +167,11 @@ type autoRuleFiredMsg struct {
 
 // statusFlashExpiredMsg signals the status flash should clear.
 type statusFlashExpiredMsg struct{}
+
+// mcpConnectedMsg is sent when background MCP connection completes.
+type mcpConnectedMsg struct {
+	manager *mcp.ClientManager
+}
 
 // tickerFetchMsg signals time to fetch new ticker data.
 type tickerFetchMsg struct{}
@@ -273,6 +283,27 @@ type Model struct {
 	// Stream origin for AI-routed commands (for next-step hints).
 	streamOrigin string
 
+	// Dashboard mode.
+	dashboardMode bool
+
+	// Guidance context for smart next-step hints.
+	guidanceCtx guidance.StageContext
+
+	// Cached portfolio for top bar display.
+	cachedPortfolio *api.Portfolio
+
+	// Cached trade count (updated on ticker, avoids blocking API calls in render).
+	cachedTradeCount    int
+	cachedHasAnalyzed   bool
+	cachedHasBacktested bool
+
+	// Cached welcome screen content (avoids re-rendering + random flicker on every frame).
+	cachedWelcome      string
+	welcomeDirty       bool
+
+	// Force-quit: second Ctrl+C exits immediately.
+	quitAttempts int
+
 	// Ticker direction tracking.
 	prevTickerPrices map[string]float64
 
@@ -322,22 +353,20 @@ func New() Model {
 	registry := tools.NewRegistry()
 	tools.RegisterBuiltins(registry, client, riskFn)
 
-	// Connect to external MCP servers (if configured in ~/.nickai/mcp.json).
+	// MCP servers connect in the background (see mcpConnectedMsg handler).
 	var mcpMgr *mcp.ClientManager
-	if mcpCfg, err := mcp.LoadMCPConfig(); err == nil && len(mcpCfg.MCPServers) > 0 {
-		mcpMgr = mcp.NewClientManager()
-		mcpMgr.ConnectAll(mcpCfg)
-		mcpRiskFn := mcp.RiskLimitsFunc(riskFn)
-		mcpMgr.RegisterTools(registry, mcpRiskFn)
-	}
 
 	var agent *ai.Agent
 	anthKey := cfg.AnthropicKeyOrEnv()
 	mmKey := cfg.MinimaxKeyOrEnv()
-	if anthKey != "" || mmKey != "" {
-		agent = ai.NewAgent(client, anthKey, registry)
+	orKey := cfg.DataKeyOrEnv("openrouter")
+	if anthKey != "" || mmKey != "" || orKey != "" {
+		agent = ai.NewAgent(client, anthKey, registry, cfg.Vibe)
 		if mmKey != "" {
 			agent.SetMinimaxKey(mmKey)
+		}
+		if orKey != "" {
+			agent.SetOpenRouterKey(orKey)
 		}
 		if cfg.Model != "" {
 			_ = agent.SetModel(cfg.Model)
@@ -413,7 +442,7 @@ func New() Model {
 		vimMode:       ModeInsert,
 		booting:       true,
 		bootFrame:     0,
-		bootTagline:   startupTaglines[rand.Intn(len(startupTaglines))],
+		bootTagline:   startupTaglines[time.Now().UnixNano()%int64(len(startupTaglines))],
 		bootStartTime: time.Now(),
 		historyIndex:  -1,
 		inputHistory:  inputHistory,
@@ -519,6 +548,20 @@ func (m Model) Init() tea.Cmd {
 	if m.toolRegistry != nil {
 		cmds = append(cmds, waitForJournalEntry(m.toolRegistry.JournalCh))
 	}
+	// Connect MCP servers in background so the app starts instantly.
+	registry := m.toolRegistry
+	riskLimitsPtr := m.riskLimits
+	riskFn := func() *risk.RiskLimits { return riskLimitsPtr }
+	cmds = append(cmds, func() tea.Msg {
+		mcpCfg, err := mcp.LoadMCPConfig()
+		if err != nil || len(mcpCfg.MCPServers) == 0 {
+			return mcpConnectedMsg{manager: nil}
+		}
+		mgr := mcp.NewClientManager()
+		mgr.ConnectAll(mcpCfg)
+		mgr.RegisterTools(registry, mcp.RiskLimitsFunc(riskFn))
+		return mcpConnectedMsg{manager: mgr}
+	})
 	return tea.Batch(cmds...)
 }
 
@@ -628,7 +671,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				rendered := renderMarkdown(msg.finalContent, m.width-8)
 				m.messages[len(m.messages)-1].content = BotMsgStyle.Render("nick:") + "\n" + rendered
 				// Append origin-based next-step hints.
-				if hints := streamOriginHints(m.streamOrigin); hints != "" {
+				if hints := m.streamOriginHints(m.streamOrigin); hints != "" {
 					m.messages[len(m.messages)-1].content += hints
 				}
 			}
@@ -982,6 +1025,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusFlash = ""
 		return m, nil
 
+	case mcpConnectedMsg:
+		if msg.manager != nil {
+			m.mcpManager = msg.manager
+			m.welcomeDirty = true
+		}
+		return m, nil
+
 	case tickerFetchMsg:
 		if !m.tickerTicking {
 			return m, nil
@@ -1005,6 +1055,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.prevTickerPrices[p.Symbol] = p.Price
 			}
 			m.tickerPrices = msg.prices
+			// Cache portfolio and guidance data for top bar + welcome screen.
+			if m.client.IsConfigured() {
+				if portfolio, err := m.client.GetPortfolio(); err == nil {
+					m.cachedPortfolio = portfolio
+				}
+			}
+			m.refreshGuidanceCaches()
+			m.welcomeDirty = true
 		}
 		if !m.tickerTicking {
 			return m, nil
@@ -1014,14 +1072,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 
 	case tea.KeyMsg:
-		// Drop leaked OSC terminal color responses (e.g. ]11;rgb:XXXX/XXXX/XXXX).
-		if oscResponseRe.MatchString(msg.String()) {
+		// Drop leaked OSC terminal color responses (e.g. ]11;rgb:XXXX/XXXX/XXXX)
+		// and any partial hex-color fragments that arrive as separate events.
+		s := msg.String()
+		if oscResponseRe.MatchString(s) || oscLeakRe.MatchString(s) {
 			return m, nil
 		}
 
 		if msg.Type == tea.KeyCtrlC {
-			m.cleanup()
-			return m, tea.Quit
+			// Restore terminal immediately — no blocking calls before this.
+			fmt.Print("\033[?1049l\033[?25h\033[0m")
+			// Save non-blocking state.
+			saveInputHistory(m.inputHistory)
+			// Force-exit. MCP cleanup is skipped — OS will reap child processes.
+			os.Exit(0)
 		}
 		// Ignore key input during boot animation.
 		if m.booting {
@@ -1066,6 +1130,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.welcomeDirty = true
 		m.textInput.Width = msg.Width - 10
 
 		headerHeight := 1 // top bar
@@ -1074,8 +1139,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if !m.ready {
 			m.viewport = viewport.New(msg.Width, vpHeight)
-			m.viewport.MouseWheelEnabled = false
-			m.viewport.SetContent(RenderWelcome(msg.Width, m.client.IsConfigured()))
+			m.viewport.MouseWheelEnabled = true
+			m.welcomeDirty = true
 			m.ready = true
 		} else {
 			m.viewport.Width = msg.Width
@@ -1100,6 +1165,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
+		if m.dashboardMode {
+			m.dashboardMode = false
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + "Back to chat.")
+			m.updateViewport()
+			return m, nil
+		}
 		m.vimMode = ModeNormal
 		m.normalKeyBuf = ""
 		m.completionCandidates = nil
@@ -1200,6 +1271,10 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case commands.TypeQuit:
 			m.cleanup()
 			return m, tea.Quit
+		case commands.TypeHelp:
+			m.dialog = DialogState{Active: DialogHelp}
+			return m, nil
+
 		case commands.TypeClear:
 			m.messages = nil
 			m.viewport.SetContent(m.welcomeContent())
@@ -1516,6 +1591,22 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
+		case commands.TypeDashboard:
+			m.dashboardMode = !m.dashboardMode
+			if m.dashboardMode {
+				m.addBotMessage(BotMsgStyle.Render("nick: ") + "Dashboard mode. Press " + CommandStyle.Render("Esc") + " or " + CommandStyle.Render("/dashboard") + " to exit.")
+			} else {
+				m.addBotMessage(BotMsgStyle.Render("nick: ") + "Back to chat.")
+			}
+			m.updateViewport()
+			return m, nil
+
+		case commands.TypeVibe:
+			output := m.handleVibe(result.Args)
+			m.addBotMessage(output)
+			m.updateViewport()
+			return m, nil
+
 		case commands.TypeAnalytics:
 			// Async API call with loading spinner.
 			m.loading = true
@@ -1657,7 +1748,8 @@ func (m Model) updateNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		m.vimMode = ModeInsert
 		m.textInput.Focus()
-		// Append after current cursor position (don't move to end).
+		// Append after current cursor position.
+		m.textInput.SetCursor(m.textInput.Position() + 1)
 		return m, textinput.Blink
 	case "A":
 		m.vimMode = ModeInsert
@@ -1666,12 +1758,11 @@ func (m Model) updateNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case "I":
 		m.vimMode = ModeInsert
-		m.textInput.SetValue("")
 		m.textInput.Focus()
+		m.textInput.CursorStart()
 		return m, textinput.Blink
 	case "o":
 		m.vimMode = ModeInsert
-		m.textInput.SetValue("")
 		m.textInput.Focus()
 		return m, textinput.Blink
 
@@ -1761,8 +1852,7 @@ func (m Model) executeVimCommand(cmd string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "help":
-		m.addBotMessage(RenderHelp())
-		m.updateViewport()
+		m.dialog = DialogState{Active: DialogHelp}
 		return m, nil
 
 	case "man":
@@ -3598,17 +3688,54 @@ func (m *Model) streamToAI(prompt, loadingText, origin string) (string, tea.Cmd)
 	)
 }
 
-// buildPortfolioSummary creates a one-liner portfolio context for the AI agent.
+// buildPortfolioSummary creates rich portfolio context for the AI agent.
 func buildPortfolioSummary(portfolio *api.Portfolio) string {
 	if portfolio == nil {
 		return ""
 	}
-	parts := []string{fmt.Sprintf("Portfolio: $%.0f", portfolio.TotalValue)}
-	for _, pos := range portfolio.Assets {
-		parts = append(parts, fmt.Sprintf("%s %.4f", pos.Symbol, pos.Quantity))
+
+	startingCapital := 100000.0
+	pnl := portfolio.TotalValue - startingCapital
+	pnlPct := (pnl / startingCapital) * 100
+	cashPct := 0.0
+	if portfolio.TotalValue > 0 {
+		cashPct = (portfolio.AvailableCash / portfolio.TotalValue) * 100
 	}
-	parts = append(parts, fmt.Sprintf("Cash $%.0f", portfolio.AvailableCash))
-	return strings.Join(parts, " | ")
+
+	var sb strings.Builder
+	sb.WriteString("CURRENT PORTFOLIO STATE:\n")
+	sb.WriteString(fmt.Sprintf("Total value: $%.2f | Cash: $%.2f (%.0f%%) | P&L: %+.2f (%+.1f%%)\n",
+		portfolio.TotalValue, portfolio.AvailableCash, cashPct, pnl, pnlPct))
+
+	if len(portfolio.Assets) > 0 {
+		sb.WriteString("Positions: ")
+		for i, pos := range portfolio.Assets {
+			if pos.Quantity <= 0 {
+				continue
+			}
+			sym := strings.TrimSuffix(pos.Symbol, "USDT")
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(fmt.Sprintf("%s %.4f ($%.0f)", sym, pos.Quantity, pos.Value))
+		}
+		sb.WriteString("\n")
+	} else {
+		sb.WriteString("No open positions.\n")
+	}
+
+	// Proactive hints for the AI based on portfolio state.
+	if cashPct > 50 {
+		sb.WriteString("Note: User has significant idle cash — consider suggesting entries when discussing markets.\n")
+	}
+	if pnlPct < -5 {
+		sb.WriteString("Note: User is down significantly — be mindful of risk management.\n")
+	}
+	if pnlPct > 10 {
+		sb.WriteString("Note: User is performing well — consider suggesting profit-taking or trailing stops.\n")
+	}
+
+	return sb.String()
 }
 
 // trackRecentCommand adds a command summary to the ring buffer and updates AI context.
@@ -3622,22 +3749,14 @@ func (m *Model) trackRecentCommand(summary string) {
 	}
 }
 
-// streamOriginHints returns next-step hints based on stream origin.
-func streamOriginHints(origin string) string {
-	switch origin {
-	case "analyze":
-		return NextSteps("/chart <sym>", "/buy <sym>")
-	case "backtest":
-		return NextSteps("/backtest activate", "/auto list")
-	case "consensus":
-		return NextSteps("/buy", "/analyze")
-	case "bet":
-		return NextSteps("/odds", "/polymarket")
-	case "stock":
-		return NextSteps("/chart", "/screen")
-	default:
+// streamOriginHints returns next-step hints based on stream origin and user context.
+func (m Model) streamOriginHints(origin string) string {
+	ctx := m.buildGuidanceCtx()
+	hints := guidance.NextStepAfterCommand(origin, ctx)
+	if len(hints) == 0 {
 		return ""
 	}
+	return NextSteps(hints...)
 }
 
 // --- Helper: streaming ---
@@ -3671,8 +3790,9 @@ func waitForConfirmation(ch <-chan tools.ConfirmRequest) tea.Cmd {
 func randomID(n int) string {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, n)
+	crand.Read(b)
 	for i := range b {
-		b[i] = chars[rand.Intn(len(chars))]
+		b[i] = chars[b[i]%byte(len(chars))]
 	}
 	return string(b)
 }
@@ -3908,8 +4028,8 @@ func (m *Model) handleConfig(args []string) string {
 	case "set":
 		if len(args) < 3 {
 			return ErrorStyle.Render("  Usage: ") +
-				CommandStyle.Render("/config set api_key <key>") + " or " +
-				CommandStyle.Render("/config set url <url>")
+				CommandStyle.Render("/config set <key> <value>") + "\n" +
+				DimStyle.Render("  Keys: api_key, url, anthropic_key, minimax_key, openrouter_key")
 		}
 		key := strings.ToLower(args[1])
 		value := args[2]
@@ -3923,9 +4043,14 @@ func (m *Model) handleConfig(args []string) string {
 			m.cfg.AnthropicKey = value
 		case "minimax_key":
 			m.cfg.MinimaxKey = value
+		case "openrouter_key":
+			if m.cfg.DataKeys == nil {
+				m.cfg.DataKeys = make(map[string]string)
+			}
+			m.cfg.DataKeys["openrouter"] = value
 		default:
 			return ErrorStyle.Render("  Unknown config key: ") + key +
-				"\n" + DimStyle.Render("  Valid keys: api_key, url, anthropic_key, minimax_key")
+				"\n" + DimStyle.Render("  Valid keys: api_key, url, anthropic_key, minimax_key, openrouter_key")
 		}
 
 		if err := m.cfg.Save(); err != nil {
@@ -3935,14 +4060,20 @@ func (m *Model) handleConfig(args []string) string {
 
 		if akKey := m.cfg.AnthropicKeyOrEnv(); akKey != "" {
 			if m.agent == nil {
-				m.agent = ai.NewAgent(m.client, akKey, m.toolRegistry)
+				m.agent = ai.NewAgent(m.client, akKey, m.toolRegistry, m.cfg.Vibe)
 			}
 		}
 		if mmKey := m.cfg.MinimaxKeyOrEnv(); mmKey != "" {
 			if m.agent == nil {
-				m.agent = ai.NewAgent(m.client, "", m.toolRegistry)
+				m.agent = ai.NewAgent(m.client, "", m.toolRegistry, m.cfg.Vibe)
 			}
 			m.agent.SetMinimaxKey(mmKey)
+		}
+		if orKey := m.cfg.DataKeyOrEnv("openrouter"); orKey != "" {
+			if m.agent == nil {
+				m.agent = ai.NewAgent(m.client, "", m.toolRegistry, m.cfg.Vibe)
+			}
+			m.agent.SetOpenRouterKey(orKey)
 		}
 
 		return RenderConfigSet(key, value)
@@ -3961,9 +4092,13 @@ func (m *Model) handleConfig(args []string) string {
 			m.cfg.AnthropicKey = ""
 		case "minimax_key":
 			m.cfg.MinimaxKey = ""
+		case "openrouter_key":
+			if m.cfg.DataKeys != nil {
+				delete(m.cfg.DataKeys, "openrouter")
+			}
 		default:
 			return ErrorStyle.Render("  Unknown config key: ") + key +
-				"\n" + DimStyle.Render("  Valid keys: api_key, anthropic_key, minimax_key")
+				"\n" + DimStyle.Render("  Valid keys: api_key, anthropic_key, minimax_key, openrouter_key")
 		}
 		if err := m.cfg.Save(); err != nil {
 			return ErrorStyle.Render("  Failed to save config: ") + err.Error()
@@ -4014,7 +4149,7 @@ func (m *Model) handleMCP(args []string) string {
 
 	case "add":
 		if len(args) < 2 {
-			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/mcp add <name>")
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/mcp add <name> [KEY=value ...]")
 		}
 		entry := mcp.GetEntry(args[1])
 		if entry == nil {
@@ -4022,18 +4157,30 @@ func (m *Model) handleMCP(args []string) string {
 				DimStyle.Render("\n  Use ") + CommandStyle.Render("/mcp search") +
 				DimStyle.Render(" to browse available servers.")
 		}
-		// Check if required env vars are set.
+		// Parse inline KEY=VALUE pairs from remaining args.
+		inlineEnv := map[string]string{}
+		for _, a := range args[2:] {
+			if idx := strings.Index(a, "="); idx > 0 {
+				inlineEnv[a[:idx]] = a[idx+1:]
+			}
+		}
+		// Check if required env vars are provided (inline, env, or already in config).
 		var missing []string
 		for _, key := range entry.EnvKeys {
-			if os.Getenv(key) == "" {
-				missing = append(missing, key)
+			if _, ok := inlineEnv[key]; ok {
+				continue
 			}
+			if os.Getenv(key) != "" {
+				continue
+			}
+			missing = append(missing, key)
 		}
 		if len(missing) > 0 {
 			lines := []string{
-				BotMsgStyle.Render("nick: ") + "To add " + BrandStyle.Render(entry.DisplayName) + ", set these env vars first:",
+				BotMsgStyle.Render("nick: ") + "To add " + BrandStyle.Render(entry.DisplayName) + ", provide the required keys:",
 				"",
 			}
+			example := "/mcp add " + entry.Name
 			for _, k := range missing {
 				hint := "<your-value>"
 				if entry.EnvHints != nil {
@@ -4041,13 +4188,13 @@ func (m *Model) handleMCP(args []string) string {
 						hint = h
 					}
 				}
-				lines = append(lines, "  "+CommandStyle.Render("export "+k+"=")+DimStyle.Render(hint))
+				example += " " + k + "=" + hint
 			}
-			lines = append(lines, "", DimStyle.Render("  Then run ")+CommandStyle.Render("/mcp add "+entry.Name)+DimStyle.Render(" again."))
+			lines = append(lines, "  "+CommandStyle.Render(example))
 			return strings.Join(lines, "\n")
 		}
 		// Write to mcp.json config.
-		err := mcp.AddServerToConfig(entry)
+		err := mcp.AddServerToConfig(entry, inlineEnv)
 		if err != nil {
 			return ErrorStyle.Render("  Failed to save MCP config: ") + err.Error()
 		}
@@ -4057,7 +4204,20 @@ func (m *Model) handleMCP(args []string) string {
 
 	case "remove", "rm":
 		if len(args) < 2 {
-			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/mcp remove <name>")
+			return ErrorStyle.Render("  Usage: ") + CommandStyle.Render("/mcp remove <name>") +
+				DimStyle.Render("  or  ") + CommandStyle.Render("/mcp remove all")
+		}
+		if strings.ToLower(args[1]) == "all" {
+			mcpCfg, err := mcp.LoadMCPConfig()
+			if err != nil || len(mcpCfg.MCPServers) == 0 {
+				return BotMsgStyle.Render("nick: ") + "No MCP servers configured."
+			}
+			count := len(mcpCfg.MCPServers)
+			for name := range mcpCfg.MCPServers {
+				_ = mcp.RemoveServerFromConfig(name)
+			}
+			return BotMsgStyle.Render("nick: ") + fmt.Sprintf("Removed all %d MCP servers.", count) +
+				DimStyle.Render("\n  Restart nickai to apply changes.")
 		}
 		err := mcp.RemoveServerFromConfig(args[1])
 		if err != nil {
@@ -4072,7 +4232,7 @@ func (m *Model) handleMCP(args []string) string {
 		for _, entry := range mcp.CuratedRegistry {
 			if len(entry.EnvKeys) == 0 {
 				e := entry
-				if err := mcp.AddServerToConfig(&e); err == nil {
+				if err := mcp.AddServerToConfig(&e, nil); err == nil {
 					added = append(added, entry.DisplayName)
 				}
 			}
@@ -4105,8 +4265,16 @@ func (m *Model) renderMCPList() string {
 			lines = append(lines, "  "+StatusIndicator("running")+BrandStyle.Render(conn.Name)+
 				DimStyle.Render(fmt.Sprintf("  (%d tools)", len(conn.Tools))))
 			for _, t := range conn.Tools {
+				// Truncate long descriptions to keep the list readable.
+				desc := t.Description
+				if idx := strings.IndexAny(desc, ".\n"); idx > 0 {
+					desc = desc[:idx]
+				}
+				if len(desc) > 60 {
+					desc = desc[:57] + "..."
+				}
 				lines = append(lines, "    "+CommandStyle.Render(t.Name)+
-					DimStyle.Render("  "+t.Description))
+					DimStyle.Render("  "+desc))
 			}
 		}
 	} else {
@@ -4594,6 +4762,7 @@ func (m *Model) handleModel(args []string) string {
 		}
 		lines = append(lines, "")
 		lines = append(lines, DimStyle.Render("  Usage: ")+CommandStyle.Render("/model <id>"))
+		lines = append(lines, DimStyle.Render("  Custom: ")+CommandStyle.Render("/model <openrouter-slug>")+DimStyle.Render("  (e.g. openai/gpt-4o-mini)"))
 		return strings.Join(lines, "\n")
 	}
 
@@ -4603,20 +4772,24 @@ func (m *Model) handleModel(args []string) string {
 		// Create agent if we have any key.
 		anthKey := m.cfg.AnthropicKeyOrEnv()
 		mmKey := m.cfg.MinimaxKeyOrEnv()
-		if anthKey == "" && mmKey == "" {
+		orKey := m.cfg.DataKeyOrEnv("openrouter")
+		if anthKey == "" && mmKey == "" && orKey == "" {
 			return ErrorStyle.Render("  No API keys configured.") + "\n" +
 				DimStyle.Render("  Set one with ") +
 				CommandStyle.Render("/config set anthropic_key <key>") +
 				DimStyle.Render(" or ") +
-				CommandStyle.Render("/config set minimax_key <key>")
+				CommandStyle.Render("/config set openrouter_key <key>")
 		}
 		if anthKey != "" {
-			m.agent = ai.NewAgent(m.client, anthKey, m.toolRegistry)
+			m.agent = ai.NewAgent(m.client, anthKey, m.toolRegistry, m.cfg.Vibe)
 		} else {
-			m.agent = ai.NewAgent(m.client, "", m.toolRegistry)
+			m.agent = ai.NewAgent(m.client, "", m.toolRegistry, m.cfg.Vibe)
 		}
 		if mmKey != "" {
 			m.agent.SetMinimaxKey(mmKey)
+		}
+		if orKey != "" {
+			m.agent.SetOpenRouterKey(orKey)
 		}
 	}
 
@@ -4639,7 +4812,15 @@ func (m *Model) handleModel(args []string) string {
 	m.statusFlash = "Model: " + name
 	m.statusFlashExpiry = time.Now().Add(2 * time.Second)
 
-	return BotMsgStyle.Render("nick: ") + "Switched to " + BrandStyle.Render(name) + "."
+	result := BotMsgStyle.Render("nick: ") + "Switched to " + BrandStyle.Render(name) + "."
+
+	// Warn if non-Anthropic model (no tool use).
+	if m.agent.Provider() != ai.ProviderAnthropic {
+		result += "\n" + WarningStyle.Render("  ⚠ Tools are unavailable with this model.") +
+			DimStyle.Render(" Trading, portfolio, and MCP tools require an Anthropic model.")
+	}
+
+	return result
 }
 
 // --- Session persistence ---
@@ -4689,7 +4870,59 @@ func saveInputHistory(history []string) {
 		return
 	}
 	_ = os.MkdirAll(home()+"/.nickai", 0700)
-	_ = os.WriteFile(path, data, 0600)
+	_ = safefile.AtomicWrite(path, data, 0600)
+}
+
+// handleVibe processes /vibe commands (list, set).
+func (m *Model) handleVibe(args []string) string {
+	allVibes := personality.AllVibes()
+
+	// Determine current vibe.
+	currentID := personality.DefaultVibeID
+	if m.cfg.Vibe != "" {
+		currentID = m.cfg.Vibe
+	}
+
+	// No args or "list" → show all vibes.
+	if len(args) == 0 || strings.ToLower(args[0]) == "list" {
+		var sb strings.Builder
+		sb.WriteString(BotMsgStyle.Render("nick: ") + "Pick your vibe:\n\n")
+		for _, v := range allVibes {
+			marker := "  "
+			if v.ID == currentID {
+				marker = "▸ "
+			}
+			line := fmt.Sprintf("%s%s %s — \"%s\"", marker, v.Emoji, v.Name, v.Tagline)
+			if v.ID == currentID {
+				line = lipgloss.NewStyle().Bold(true).Render(line)
+			}
+			sb.WriteString(line + "\n")
+		}
+		sb.WriteString("\n" + DimStyle.Render("Usage: ") + CommandStyle.Render("/vibe set <id>") +
+			DimStyle.Render("  IDs: degen, quant, zen, hype, sensei, degen-bets"))
+		return sb.String()
+	}
+
+	// "set <id>"
+	if strings.ToLower(args[0]) == "set" && len(args) >= 2 {
+		id := strings.ToLower(args[1])
+		vibe := personality.GetVibe(id)
+		if vibe.ID != id {
+			return BotMsgStyle.Render("nick: ") + "Unknown vibe " + CommandStyle.Render(id) +
+				". Try: degen, quant, zen, hype, sensei, degen-bets"
+		}
+		m.cfg.Vibe = id
+		_ = m.cfg.Save()
+		if m.agent != nil {
+			m.agent.SetVibe(id)
+		}
+		m.welcomeDirty = true
+		return BotMsgStyle.Render("nick: ") + vibe.Emoji + " " + lipgloss.NewStyle().Bold(true).Render(vibe.Name) +
+			" activated. " + DimStyle.Render("\""+vibe.Tagline+"\"")
+	}
+
+	return BotMsgStyle.Render("nick: ") + "Usage: " + CommandStyle.Render("/vibe") +
+		" or " + CommandStyle.Render("/vibe set <id>")
 }
 
 func home() string {
@@ -4697,8 +4930,11 @@ func home() string {
 	return h
 }
 
-// welcomeContent returns the welcome screen with dynamic context counts.
-func (m Model) welcomeContent() string {
+// welcomeContent returns the welcome screen, using cache when available.
+func (m *Model) welcomeContent() string {
+	if m.cachedWelcome != "" && !m.welcomeDirty {
+		return m.cachedWelcome
+	}
 	memCount := 0
 	if m.memoryStore != nil {
 		memCount = len(m.memoryStore.Entries)
@@ -4707,7 +4943,108 @@ func (m Model) welcomeContent() string {
 	if m.mcpManager != nil {
 		mcpCount = len(m.mcpManager.Connections())
 	}
-	return RenderWelcome(m.width, m.client.IsConfigured(), memCount, mcpCount)
+	ctx := m.buildGuidanceCtx()
+	stage := guidance.DetectStage(ctx)
+	actions := guidance.ActionsForStage(stage, ctx)
+	m.cachedWelcome = RenderWelcome(m.width, stage, actions, m.cfg.Vibe, memCount, mcpCount)
+	m.welcomeDirty = false
+	return m.cachedWelcome
+}
+
+// buildGuidanceCtx constructs the guidance context from cached model state.
+// IMPORTANT: This is called from View() — must never make blocking API calls.
+func (m Model) buildGuidanceCtx() guidance.StageContext {
+	ctx := guidance.StageContext{
+		HasAPIKey:     m.client.IsConfigured(),
+		HasAIKey:      m.agent != nil,
+		TradeCount:    m.cachedTradeCount,
+		HasAnalyzed:   m.cachedHasAnalyzed,
+		HasBacktested: m.cachedHasBacktested,
+	}
+	if m.mcpManager != nil {
+		ctx.MCPCount = m.mcpManager.ConnectionCount()
+	}
+	if m.memoryStore != nil {
+		ctx.MemoryCount = len(m.memoryStore.Entries)
+	}
+	if m.cachedPortfolio != nil {
+		ctx.PortfolioValue = m.cachedPortfolio.TotalValue
+		ctx.CashBalance = m.cachedPortfolio.AvailableCash
+		for _, pos := range m.cachedPortfolio.Assets {
+			if pos.Quantity > 0 {
+				ctx.TopPositions = append(ctx.TopPositions, strings.TrimSuffix(pos.Symbol, "USDT"))
+			}
+		}
+	}
+	return ctx
+}
+
+// refreshGuidanceCaches updates cached data used by buildGuidanceCtx.
+// Called from ticker updates and after trades — safe to make API calls here.
+func (m *Model) refreshGuidanceCaches() {
+	if m.client.IsConfigured() {
+		if orders, err := m.client.GetOrders(); err == nil {
+			count := 0
+			for _, o := range orders {
+				if o.Status == "filled" || o.Status == "completed" {
+					count++
+				}
+			}
+			m.cachedTradeCount = count
+		}
+	}
+	if m.memoryStore != nil {
+		for _, e := range m.memoryStore.Entries {
+			for _, tag := range e.Tags {
+				if tag == "analyzed" {
+					m.cachedHasAnalyzed = true
+				}
+				if tag == "backtested" {
+					m.cachedHasBacktested = true
+				}
+			}
+		}
+	}
+
+	// Inject rich guidance context into the AI agent.
+	if m.agent != nil {
+		ctx := m.buildGuidanceCtx()
+		stage := guidance.DetectStage(ctx)
+		m.agent.SetGuidanceContext(buildGuidancePrompt(stage, ctx))
+	}
+}
+
+// buildGuidancePrompt creates a context string telling Nick where the user is in their journey.
+func buildGuidancePrompt(stage guidance.Stage, ctx guidance.StageContext) string {
+	var sb strings.Builder
+	sb.WriteString("USER JOURNEY CONTEXT:\n")
+	sb.WriteString(fmt.Sprintf("Stage: %s | Trades: %d | MCP servers: %d | Memories: %d\n", stage, ctx.TradeCount, ctx.MCPCount, ctx.MemoryCount))
+
+	// Tell Nick what the user hasn't discovered yet — so he can naturally introduce features.
+	var unused []string
+	if ctx.TradeCount == 0 {
+		unused = append(unused, "hasn't placed a trade yet — encourage trying /buy")
+	}
+	if !ctx.HasAnalyzed {
+		unused = append(unused, "hasn't used /analyze — mention it when discussing technicals")
+	}
+	if !ctx.HasBacktested {
+		unused = append(unused, "hasn't tried /backtest — suggest it when discussing strategies")
+	}
+	if ctx.MCPCount == 0 {
+		unused = append(unused, "has no MCP tools — suggest /mcp quick for free market data")
+	}
+	if len(unused) > 0 {
+		sb.WriteString("Undiscovered features: ")
+		sb.WriteString(strings.Join(unused, "; "))
+		sb.WriteString("\nNaturally weave these suggestions into conversation — don't dump a list.\n")
+	}
+
+	if len(ctx.TopPositions) > 0 {
+		sb.WriteString("Open positions: " + strings.Join(ctx.TopPositions, ", ") + "\n")
+	}
+
+	return sb.String()
 }
 
 func (m *Model) updateViewport() {
@@ -4742,8 +5079,11 @@ func (m *Model) updateViewport() {
 	}
 	content := strings.Join(parts, "\n")
 	m.viewContent = content
+	atBottom := m.viewport.AtBottom()
 	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
+	if atBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 // apiLoadingText returns the loading message for a given command type.
@@ -4784,7 +5124,7 @@ func (m Model) View() string {
 		return m.renderBootSequence()
 	}
 
-	// ── Top bar: logo + live ticker ──
+	// ── Top bar: logo + live ticker + portfolio ──
 	topLeft := lipgloss.NewStyle().
 		Foreground(ColorPrimary).Bold(true).
 		Render("NickAI")
@@ -4809,6 +5149,12 @@ func (m Model) View() string {
 		tickerStr = strings.Join(tickerParts, "  ")
 	}
 
+	// Portfolio value in top bar.
+	portfolioStr := formatPortfolioTopBar(m.cachedPortfolio)
+	if portfolioStr != "" {
+		tickerStr += "    " + portfolioStr
+	}
+
 	// Build right-side status indicators.
 	statusRight := m.renderStatusRight()
 	leftContent := topLeft + "    " + tickerStr
@@ -4828,7 +5174,13 @@ func (m Model) View() string {
 
 	inputBar := m.renderInputBar()
 
-	base := topBar + "\n" + m.viewport.View() + "\n" + inputBar
+	var base string
+	if m.dashboardMode {
+		dashContent := m.renderDashboard()
+		base = topBar + "\n" + dashContent + "\n" + inputBar
+	} else {
+		base = topBar + "\n" + m.viewport.View() + "\n" + inputBar
+	}
 
 	// Slash command suggestions overlay.
 	if len(m.completionCandidates) > 0 && m.vimMode == ModeInsert {

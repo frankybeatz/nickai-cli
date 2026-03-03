@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 const DefaultBaseURL = "https://paper.getnick.ai/api/v1"
@@ -18,6 +20,7 @@ type Config struct {
 	Theme        string            `json:"theme,omitempty"`
 	Model        string            `json:"model,omitempty"`
 	DataKeys     map[string]string `json:"data_keys,omitempty"` // premium data source API keys
+	Vibe         string            `json:"vibe,omitempty"`
 }
 
 // configPath returns ~/.nickai/config.json.
@@ -72,7 +75,7 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return safefile.AtomicWrite(path, data, 0600)
 }
 
 // HasAPIKey returns true if an API key is configured.

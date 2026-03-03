@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // Alert represents a persistent price alert.
@@ -50,18 +52,22 @@ func Save(alerts []Alert) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(alerts, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return safefile.AtomicWrite(path, data, 0o600)
 }
 
 // Add appends an alert and saves.
 func Add(a Alert) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	alerts, err := Load()
 	if err != nil {
 		return err
@@ -72,6 +78,10 @@ func Add(a Alert) error {
 
 // Remove deletes a matching alert and saves.
 func Remove(symbol, op string, target float64) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	alerts, err := Load()
 	if err != nil {
 		return err

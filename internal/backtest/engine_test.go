@@ -121,7 +121,7 @@ func TestComputeMetrics(t *testing.T) {
 	curve := []float64{1.0, 1.10, 1.05, 1.20}
 
 	strat := Strategy{Name: "test", Symbol: "BTC", Period: "30d"}
-	result := computeMetrics(strat, trades, curve)
+	result := computeMetrics(strat, trades, curve, "1d")
 
 	if result.TotalTrades != 3 {
 		t.Errorf("TotalTrades = %d, want 3", result.TotalTrades)
@@ -161,7 +161,7 @@ func TestComputeMetrics(t *testing.T) {
 
 func TestComputeMetricsNoTrades(t *testing.T) {
 	strat := Strategy{Name: "empty", Symbol: "ETH", Period: "30d"}
-	result := computeMetrics(strat, nil, []float64{1.0})
+	result := computeMetrics(strat, nil, []float64{1.0}, "1d")
 
 	if result.TotalTrades != 0 {
 		t.Errorf("TotalTrades = %d, want 0", result.TotalTrades)

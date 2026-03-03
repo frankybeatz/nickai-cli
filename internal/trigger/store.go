@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/nickai/cli/internal/safefile"
 )
 
 // Trigger represents a conditional trading rule that fires when a price condition is met.
@@ -60,18 +62,22 @@ func Save(triggers []Trigger) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(triggers, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return safefile.AtomicWrite(path, data, 0o600)
 }
 
 // Add appends a trigger and saves.
 func Add(t Trigger) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	triggers, err := Load()
 	if err != nil {
 		return err
@@ -82,6 +88,10 @@ func Add(t Trigger) error {
 
 // Remove deletes a trigger by ID prefix and saves.
 func Remove(idPrefix string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	triggers, err := Load()
 	if err != nil {
 		return err
@@ -98,6 +108,10 @@ func Remove(idPrefix string) error {
 
 // MarkFired sets a trigger's Fired flag and saves.
 func MarkFired(id string) error {
+	path, _ := storePath()
+	mu := safefile.Lock(path)
+	mu.Lock()
+	defer mu.Unlock()
 	triggers, err := Load()
 	if err != nil {
 		return err

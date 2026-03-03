@@ -2,40 +2,43 @@ package ui
 
 import (
 	"fmt"
-	"math/rand"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/nickai/cli/internal/guidance"
+	"github.com/nickai/cli/internal/personality"
 )
+
+// sessionSeed is a stable random value picked once at startup to prevent flicker.
+var sessionSeed = time.Now().UnixNano()
+
+// sessionTagline is picked once at startup to prevent flicker on re-renders.
+var sessionTagline = startupTaglines[sessionSeed%int64(len(startupTaglines))]
 
 var startupTaglines = []string{
 	"Your agents don't sleep. Neither should your portfolio.",
-	"Multi-LLM consensus. Zero human emotion.",
+	"10 AI models. One consensus. Zero emotion.",
 	"Built different. Trades different.",
 	"The terminal is the trading floor.",
-	"Ctrl+C is the only stop-loss you need.",
 	"While you sleep, your agents compound.",
-	"Autonomous alpha, one prompt at a time.",
-	"Less panic selling. More autonomous building.",
-	"Your portfolio called. It wants an upgrade.",
-	"Agents go brrr.",
-	"Wall Street runs on coffee. NickAI runs on tokens.",
 	"Deploy an agent. Touch grass. Check back later.",
-	"No Bloomberg terminal needed. Just vibes and workflows.",
-	"Sentiment analysis at 3am so you don't have to be.",
-	"The only leverage here is AI leverage.",
+	"Ape responsibly.",
+	"Not financial advice. Definitely financial vibes.",
+	"Your broker could never.",
+	"Ctrl+C is the only stop-loss you need.",
+	"WAGMI (with proper risk management).",
+	"Less panic selling. More autonomous building.",
 	"From /buy to Lambo. Results may vary.",
-	"Memory-augmented. Multi-model. Fully autonomous.",
-	"10 AI models. One consensus. Zero emotion.",
-	"Your strategies backtest, activate, and execute — unattended.",
-	"Crypto, stocks, prediction markets — one terminal.",
-	"The agents remember. The strategies adapt. The terminal evolves.",
+	"Your strategies backtest themselves. You just vibe.",
+	"The degen terminal for disciplined degens.",
+	"ser, the chart is talking to me.",
+	"Fueled by caffeine and RSI divergences.",
 }
 
 // RenderWelcome returns the NickAI branded welcome screen.
-// isConfigured indicates whether the user has an API key set.
-// memCount and mcpCount are shown to returning users as context indicators.
-func RenderWelcome(width int, isConfigured bool, memCount ...int) string {
+// Now uses the guidance system for dynamic action cards.
+func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCard, vibeID string, memCount ...int) string {
 	memoryCount := 0
 	mcpCount := 0
 	if len(memCount) > 0 {
@@ -44,7 +47,7 @@ func RenderWelcome(width int, isConfigured bool, memCount ...int) string {
 	if len(memCount) > 1 {
 		mcpCount = memCount[1]
 	}
-	// Constrain the hero box to a comfortable reading width.
+
 	boxInner := min(width-6, 66)
 	if boxInner < 40 {
 		boxInner = 40
@@ -65,11 +68,11 @@ func RenderWelcome(width int, isConfigured bool, memCount ...int) string {
 	tagline := lipgloss.NewStyle().
 		Foreground(ColorSecondary).
 		Bold(true).
-		Render("The agentic OS for autonomous finance")
+		Render("Your degen co-pilot with discipline")
 
 	version := DimStyle.Render("v" + Version)
 
-	// Decorative divider — alternating dashes give an "energy pulse" look.
+	// Decorative divider.
 	pulseUnit := "─ · "
 	repeats := (boxInner - 4) / len(pulseUnit)
 	if repeats < 1 {
@@ -79,139 +82,79 @@ func RenderWelcome(width int, isConfigured bool, memCount ...int) string {
 		Foreground(ColorPrimary).
 		Render(strings.Repeat(pulseUnit, repeats))
 
-	// Welcome copy.
-	greeting := lipgloss.NewStyle().
-		Foreground(ColorWhite).
-		Bold(true).
-		Render("Welcome.") +
-		" " +
-		lipgloss.NewStyle().
-			Foreground(ColorWhite).
-			Render("I'm your NickAI agent builder.")
-
-	punchlines := []string{
-		"No suit required.",
-		"Wall Street hates this one terminal.",
-		"Pants optional, alpha required.",
-		"Hedge fund energy, hoodie dress code.",
-		"Faster than your broker's lunch break.",
-		"Your Bloomberg at home, in a terminal.",
-		"Because alt-tabbing to Binance is so 2024.",
-		"While your broker is still on hold.",
-		"Less Bloomberg, more brrr.",
-		"Suits not included. Returns may vary.",
-	}
-	bodyText := "AI-powered trading terminal. Build agents, execute trades,\nand manage your portfolio — " +
-		punchlines[rand.Intn(len(punchlines))]
-	body := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#AAAAAA")).
-		Render(bodyText)
-
-	var ctaLine, helpHint, tip string
-
-	num := func(n string) string {
-		return lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(n)
-	}
-
-	if !isConfigured {
-		// First-time user: step-by-step guide.
-		ctaLine = lipgloss.NewStyle().
-			Foreground(ColorWhite).
-			Bold(true).
-			Render("Quick start:")
-
-		helpHint = num("1. ") + CommandStyle.Render("/config init") +
-			DimStyle.Render("            — create paper trading account") +
-			"\n" + num("2. ") + CommandStyle.Render("/config set anthropic_key") +
-			DimStyle.Render(" — connect your AI") +
-			"\n" + num("3. ") + CommandStyle.Render("/mcp quick") +
-			DimStyle.Render("              — install free market data servers") +
-			"\n" + num("4. ") + DimStyle.Render("Start exploring — ") +
-			lipgloss.NewStyle().Foreground(ColorWhite).Render("\"buy 0.5 ETH\"") +
-			DimStyle.Render(", ") +
-			lipgloss.NewStyle().Foreground(ColorWhite).Render("/analyze BTC") +
-			DimStyle.Render(", ") +
-			lipgloss.NewStyle().Foreground(ColorWhite).Render("/consensus ETH")
-
-		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
-			DimStyle.Render("$100k fake money to experiment. Zero risk.")
-	} else {
-		// Returning user: normal CTA + random tip.
-		ctaLine = lipgloss.NewStyle().
-			Foreground(ColorWhite).
-			Render("Tell me what you want to build, or try a command.")
-
-		helpHint = DimStyle.Render("Type ") +
-			CommandStyle.Render("/help") +
-			DimStyle.Render(" for commands, or ") +
-			CommandStyle.Render("F1") +
-			DimStyle.Render(" for keyboard shortcuts.")
-
-		tips := []string{
-			"Tab completes commands and symbols",
-			"Press Esc for vim NORMAL mode, j/k to scroll",
-			"/chart BTC shows a sparkline chart",
-			"/snapshot shows a combined dashboard",
-			"/alert BTC > 100000 sets a background alert",
-			"/mcp search to browse trading integrations",
-			"/model to switch between AI providers",
-			"/theme to change the color scheme",
-			"Up/Down arrow cycles through command history",
-			"/man <command> shows detailed manual pages",
-			"/backtest presets to see ready-made strategies",
-			"/backtest run rsi-reversal BTC to run a preset",
-			"Ask Nick to backtest any strategy in plain English",
-			"/guide to learn the ropes interactively",
-			"/polymarket scan for prediction market analysis",
-			"/memory — Nick remembers your preferences across sessions",
-			"/consensus BTC — get opinions from 4+ AI models",
-			"/backtest run rsi-reversal BTC — test strategies on real data",
-			"/connect binance — link a real exchange via MCP",
-			"/analyze sentiment ETH — run AI analysis presets",
-		}
-		tip = lipgloss.NewStyle().Foreground(ColorPrimary).Render("● ") +
-			DimStyle.Render("Tip: "+tips[rand.Intn(len(tips))])
-
-		// Dynamic context for returning users.
-		if memoryCount > 0 {
-			tip += "\n" + DimStyle.Render(fmt.Sprintf("  ● %d memories loaded from last session", memoryCount))
-		}
-		if mcpCount > 0 {
-			tip += "\n" + DimStyle.Render(fmt.Sprintf("  ● %d MCP servers connected", mcpCount))
-		}
-	}
-
-	// Assemble inner content.
 	var inner []string
 	inner = append(inner, "")
 	inner = append(inner, styledLogo)
 	inner = append(inner, "")
 	inner = append(inner, tagline+"   "+version)
-	quip := DimStyle.Render("\"" + startupTaglines[rand.Intn(len(startupTaglines))] + "\"")
+	quip := DimStyle.Render("\"" + sessionTagline + "\"")
 	inner = append(inner, quip)
 	inner = append(inner, "")
 	inner = append(inner, divider)
 	inner = append(inner, "")
-	inner = append(inner, greeting)
-	inner = append(inner, body)
-	inner = append(inner, "")
-	inner = append(inner, ctaLine)
-	inner = append(inner, helpHint)
-	inner = append(inner, "")
-	inner = append(inner, tip)
+
+	// Dynamic content based on stage.
+	if stage == guidance.StageFresh {
+		greeting := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render("gm. Let's get you set up.")
+		inner = append(inner, greeting)
+		inner = append(inner, "")
+	} else {
+		vibe := personality.GetVibe(vibeID)
+		greetings := vibe.Greetings
+		greeting := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(greetings[sessionSeed%int64(len(greetings))])
+		inner = append(inner, greeting)
+		inner = append(inner, "")
+	}
+
+	// Action cards.
+	if len(actions) > 0 {
+		header := lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("  What's next:")
+		inner = append(inner, header)
+		inner = append(inner, "")
+		for _, card := range actions {
+			title := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
+				Render("  ▸ " + card.Title)
+			desc := DimStyle.Render("    " + card.Desc)
+			cmd := CommandStyle.Render("    " + card.Command)
+			inner = append(inner, title)
+			inner = append(inner, desc)
+			inner = append(inner, cmd)
+			inner = append(inner, "")
+		}
+	}
+
+	// Context indicators for returning users.
+	if memoryCount > 0 || mcpCount > 0 {
+		var ctx []string
+		if memoryCount > 0 {
+			ctx = append(ctx, fmt.Sprintf("%d memories loaded", memoryCount))
+		}
+		if mcpCount > 0 {
+			ctx = append(ctx, fmt.Sprintf("%d MCP servers", mcpCount))
+		}
+		inner = append(inner, DimStyle.Render("  "+strings.Join(ctx, "  ·  ")))
+		inner = append(inner, "")
+	}
+
+	// Keyboard hint.
+	inner = append(inner, DimStyle.Render("  ")+
+		CommandStyle.Render("/help")+
+		DimStyle.Render(" commands  ·  ")+
+		CommandStyle.Render("F1")+
+		DimStyle.Render(" shortcuts  ·  ")+
+		CommandStyle.Render("Esc")+
+		DimStyle.Render(" vim mode"))
 	inner = append(inner, "")
 
 	content := strings.Join(inner, "\n")
 
-	// Outer bordered box in NickAI green.
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorPrimary).
 		Padding(0, 2).
-		Width(boxInner + 4). // padding adds 4 chars
+		Width(boxInner + 4).
 		Render(content)
 
-	// Center the box in the terminal.
 	centered := lipgloss.NewStyle().
 		Width(width).
 		Align(lipgloss.Center).

@@ -4,8 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/nickai/cli/internal/journal"
+)
+
+const (
+	toolTimeout        = 30 * time.Second
+	maxToolResultBytes = 16384
 )
 
 // ToolFunc executes a tool given raw JSON input and returns a JSON string result.
@@ -109,15 +115,21 @@ func (r *Registry) ToAnthropicTools() []AnthropicToolDef {
 	return defs
 }
 
-// ExecuteTool looks up a tool by name and runs it. Returns a JSON result string.
+// ExecuteTool looks up a tool by name and runs it with a 30s timeout.
+// Results are truncated to 16KB to prevent context window overflow.
 func (r *Registry) ExecuteTool(name string, rawInput json.RawMessage) string {
 	entry, ok := r.Get(name)
 	if !ok {
 		return ErrorJSON("unknown tool: " + name)
 	}
-	result, err := entry.Execute(context.Background(), rawInput)
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
+	defer cancel()
+	result, err := entry.Execute(ctx, rawInput)
 	if err != nil {
 		return ErrorJSON(err.Error())
+	}
+	if len(result) > maxToolResultBytes {
+		result = result[:maxToolResultBytes] + "\n...(truncated)"
 	}
 	return result
 }
