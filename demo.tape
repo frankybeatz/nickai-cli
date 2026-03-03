@@ -30,7 +30,7 @@ Show
 # ─────────────────────────────────────────────
 # ACT 1 — Launch & Boot Sequence
 # ─────────────────────────────────────────────
-# The boot animation is ~4s: ASCII logo reveal → tagline typeout → status checks
+# The boot animation: ASCII logo → tagline → status checks → welcome with XP/level
 Type "/tmp/nickai-demo"
 Enter
 Sleep 6s
@@ -77,13 +77,38 @@ Sleep 2s
 Type "y"
 Sleep 3s
 
-# Check what we own now
+# Check portfolio after trade
 Type "/status"
 Enter
 Sleep 3s
 
 # ─────────────────────────────────────────────
-# ACT 6 — Portfolio Analytics
+# ACT 6 — Backtest Engine (NEW)
+# ─────────────────────────────────────────────
+# Show available presets
+Type "/backtest presets"
+Enter
+Sleep 3s
+
+# Run a backtest — Monte Carlo + equity curve
+Type "/backtest run rsi-reversal BTC"
+Enter
+Sleep 6s
+
+# AI analyzes the strategy
+Type "/backtest analyze"
+Enter
+Sleep 12s
+
+# ─────────────────────────────────────────────
+# ACT 7 — Multi-LLM Consensus
+# ─────────────────────────────────────────────
+Type "/consensus BTC"
+Enter
+Sleep 10s
+
+# ─────────────────────────────────────────────
+# ACT 8 — Portfolio Analytics
 # ─────────────────────────────────────────────
 # Sharpe ratio, drawdown, win rate, allocation bar chart
 Type "/analytics"
@@ -96,13 +121,9 @@ Enter
 Sleep 3s
 
 # ─────────────────────────────────────────────
-# ACT 7 — Risk Guardrails
+# ACT 9 — Risk Guardrails
 # ─────────────────────────────────────────────
 Type "/risk set max-order 5000"
-Enter
-Sleep 2s
-
-Type "/risk set daily-loss 1000"
 Enter
 Sleep 2s
 
@@ -111,7 +132,7 @@ Enter
 Sleep 3s
 
 # ─────────────────────────────────────────────
-# ACT 8 — Automation & Triggers
+# ACT 10 — Automation
 # ─────────────────────────────────────────────
 # Price alert
 Type "/alert BTC > 100000"
@@ -123,26 +144,24 @@ Type "/trigger add ETH < 3000 buy 1.0"
 Enter
 Sleep 2.5s
 
-# Desktop notifications
-Type "/notify set desktop on"
+# ─────────────────────────────────────────────
+# ACT 11 — Live Price Dashboard
+# ─────────────────────────────────────────────
+Type "/watch BTC ETH SOL"
 Enter
-Sleep 2s
+Sleep 5s
 
-# Test notification
-Type "/notify test"
-Enter
-Sleep 3s
+# Exit watch mode
+Escape
+Sleep 500ms
+Type "i"
+Sleep 300ms
 
 # ─────────────────────────────────────────────
-# ACT 9 — Charts & Market Data
+# ACT 12 — Charts & Market Data
 # ─────────────────────────────────────────────
 # Sparkline chart
 Type "/chart BTC"
-Enter
-Sleep 3s
-
-# Multi-price quotes
-Type "/price BTC ETH SOL"
 Enter
 Sleep 3s
 
@@ -152,38 +171,33 @@ Enter
 Sleep 4s
 
 # ─────────────────────────────────────────────
-# ACT 10 — Dashboard
+# ACT 13 — Combined Dashboard
 # ─────────────────────────────────────────────
 Type "/snapshot"
 Enter
 Sleep 4s
 
 # ─────────────────────────────────────────────
-# ACT 11 — Command Palette (Ctrl+K)
+# ACT 14 — Command Palette (Ctrl+K)
 # ─────────────────────────────────────────────
 Ctrl+K
 Sleep 1.5s
 
 # Fuzzy search
-Type "anal"
+Type "back"
 Sleep 1s
 
-# Select analyze
-Enter
+# Close palette
+Escape
 Sleep 500ms
 
-# Complete the command
-Type " ETH"
-Enter
-Sleep 4s
-
 # ─────────────────────────────────────────────
-# ACT 12 — Theme Picker (Ctrl+T)
+# ACT 15 — Theme Showcase
 # ─────────────────────────────────────────────
 Ctrl+T
 Sleep 1.5s
 
-# Browse themes — move to cyberpunk
+# Browse to cyberpunk
 Down
 Sleep 400ms
 Down
@@ -193,12 +207,12 @@ Sleep 400ms
 Enter
 Sleep 2s
 
-# Show the market in the new theme
-Type "/market"
+# Show the market in cyberpunk
+Type "/price BTC ETH SOL"
 Enter
 Sleep 3s
 
-# Switch to matrix theme
+# Switch to matrix
 Ctrl+T
 Sleep 1.5s
 Down
@@ -210,29 +224,27 @@ Sleep 300ms
 Down
 Sleep 300ms
 
-# Select matrix
 Enter
 Sleep 2s
 
-# Show chart in matrix green
+# Chart in matrix green
 Type "/chart ETH"
 Enter
 Sleep 3s
 
-# Switch back to default theme
+# Back to default
 Ctrl+T
 Sleep 1.5s
 Enter
 Sleep 1.5s
 
 # ─────────────────────────────────────────────
-# ACT 13 — Vim Mode & Overlays
+# ACT 16 — Vim Mode
 # ─────────────────────────────────────────────
-# Enter normal mode
 Escape
 Sleep 500ms
 
-# Scroll up through history
+# Scroll up
 Type "kkkkkk"
 Sleep 1.5s
 
@@ -240,7 +252,7 @@ Sleep 1.5s
 Type "G"
 Sleep 500ms
 
-# Open help overlay
+# Help overlay
 Type "?"
 Sleep 3s
 
@@ -252,14 +264,12 @@ Sleep 500ms
 Ctrl+O
 Sleep 2s
 
-# Close it
 Escape
 Sleep 1s
 
 # ─────────────────────────────────────────────
-# ACT 14 — AI Creates an Automation
+# ACT 17 — AI Creates Automation
 # ─────────────────────────────────────────────
-# Back to insert mode
 Type "i"
 Sleep 300ms
 
@@ -273,21 +283,14 @@ Enter
 Sleep 3s
 
 # ─────────────────────────────────────────────
-# ACT 15 — Manual Page
-# ─────────────────────────────────────────────
-Type "/man analyze"
-Enter
-Sleep 3s
-
-# ─────────────────────────────────────────────
-# ACT 16 — Trade Journal
+# ACT 18 — Trade Journal
 # ─────────────────────────────────────────────
 Type "/history"
 Enter
 Sleep 3s
 
 # ─────────────────────────────────────────────
-# ACT 17 — Exit
+# ACT 19 — Exit
 # ─────────────────────────────────────────────
 Escape
 Sleep 300ms
