@@ -149,10 +149,10 @@ The primary security concern is that the AI agent operates in a tool-use loop wh
 **Description:** The Nick Node server (`internal/node/server.go`) listens on a TCP port (default `localhost:9400`) and the client (`internal/node/client.go`) connects using `insecure.NewCredentials()` (client.go line 35).
 
 **Current state:**
-- `grpc.NewServer()` is called with no options (server.go line 93) -- no TLS, no authentication interceptors.
-- `grpc.DialContext()` uses `grpc.WithTransportCredentials(insecure.NewCredentials())` (client.go line 35) -- plaintext connection.
-- No authentication or authorization on any RPC -- any process that can reach the port can deploy strategies, submit backtests, create alerts, or stream prices.
-- The server binds to the address provided at startup, which could be `0.0.0.0:9400` if misconfigured, exposing it to the network.
+- `grpc.NewServer()` can enforce token authentication via unary/stream interceptors when `--token` (or `NICKAI_NODE_TOKEN`) is set.
+- `grpc.DialContext()` still uses `grpc.WithTransportCredentials(insecure.NewCredentials())` -- plaintext connection.
+- The CLI defaults to `127.0.0.1:9400` and requires a token for non-loopback bind addresses.
+- If a non-loopback service is exposed without proper network controls, traffic remains vulnerable to interception because transport is not TLS.
 
 **Attack vectors:**
 - **Local privilege escalation:** Any process on the same machine can connect to the node and deploy arbitrary strategies or create alerts.
@@ -163,8 +163,8 @@ The primary security concern is that the AI agent operates in a tool-use loop wh
 
 **Mitigations (recommended):**
 - Add TLS with self-signed certificates for localhost communication (mutual TLS for remote).
-- Implement a shared-secret or token-based authentication interceptor.
-- Default to binding on `127.0.0.1` only, requiring explicit opt-in for network-accessible binding.
+- Keep token auth enabled for all non-loopback deployments.
+- Keep default binding on `127.0.0.1` only; require explicit opt-in for network-accessible binding.
 - Add gRPC interceptors for logging and rate limiting.
 
 ---

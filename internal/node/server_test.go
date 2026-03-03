@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/nickai/cli/internal/node/pb"
 )
@@ -17,7 +18,7 @@ import (
 func startTestServer(t *testing.T) (pb.NickNodeClient, func()) {
 	t.Helper()
 
-	srv := NewServer()
+	srv := NewServer("")
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -68,6 +69,75 @@ func TestPing(t *testing.T) {
 	}
 	if resp.UptimeSeconds < 0 {
 		t.Error("expected non-negative uptime")
+	}
+}
+
+func TestPingRequiresTokenWhenConfigured(t *testing.T) {
+	srv := NewServer("secret-token")
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+
+	grpcSrv := grpc.NewServer(
+		grpc.UnaryInterceptor(srv.authUnaryInterceptor),
+		grpc.StreamInterceptor(srv.authStreamInterceptor),
+	)
+	pb.RegisterNickNodeServer(grpcSrv, srv)
+	srv.grpcServer = grpcSrv
+
+	go grpcSrv.Serve(lis)
+	defer srv.Stop()
+
+	connNoToken, err := grpc.DialContext(
+		context.Background(),
+		lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.CallContentSubtype("json")),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		t.Fatalf("failed to dial without token: %v", err)
+	}
+	defer connNoToken.Close()
+	clientNoToken := pb.NewNickNodeClient(connNoToken)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := clientNoToken.Ping(ctx, &pb.PingRequest{}); err == nil {
+		t.Fatal("expected unauthenticated error without token")
+	}
+
+	tokenInterceptor := func(
+		ctx context.Context,
+		method string,
+		req any,
+		reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-node-token", "secret-token")
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+
+	connWithToken, err := grpc.DialContext(
+		context.Background(),
+		lis.Addr().String(),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.CallContentSubtype("json")),
+		grpc.WithUnaryInterceptor(tokenInterceptor),
+		grpc.WithBlock(),
+	)
+	if err != nil {
+		t.Fatalf("failed to dial with token: %v", err)
+	}
+	defer connWithToken.Close()
+	clientWithToken := pb.NewNickNodeClient(connWithToken)
+
+	if _, err := clientWithToken.Ping(ctx, &pb.PingRequest{}); err != nil {
+		t.Fatalf("expected ping success with token, got error: %v", err)
 	}
 }
 
@@ -294,7 +364,7 @@ func TestGetStatus(t *testing.T) {
 }
 
 func TestServerStartStop(t *testing.T) {
-	srv := NewServer()
+	srv := NewServer("")
 
 	// Pick a random port.
 	lis, err := net.Listen("tcp", "127.0.0.1:0")

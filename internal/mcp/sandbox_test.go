@@ -5,7 +5,7 @@ import (
 )
 
 func TestValidateCommand_Allowed(t *testing.T) {
-	allowed := []string{"npx", "node", "python", "python3", "uvx", "docker", "deno", "bun"}
+	allowed := []string{"npx", "node", "python", "python3", "uvx"}
 	for _, cmd := range allowed {
 		if err := ValidateCommand(cmd); err != nil {
 			t.Errorf("ValidateCommand(%q) unexpected error: %v", cmd, err)
@@ -14,7 +14,7 @@ func TestValidateCommand_Allowed(t *testing.T) {
 }
 
 func TestValidateCommand_Blocked(t *testing.T) {
-	blocked := []string{"rm", "bash", "sh", "curl", "wget", "cat", "nc", "dd"}
+	blocked := []string{"rm", "bash", "sh", "curl", "wget", "cat", "nc", "dd", "docker", "deno", "bun"}
 	for _, cmd := range blocked {
 		if err := ValidateCommand(cmd); err == nil {
 			t.Errorf("ValidateCommand(%q) expected error, got nil", cmd)

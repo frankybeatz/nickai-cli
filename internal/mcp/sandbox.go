@@ -13,9 +13,6 @@ var allowedCommands = map[string]bool{
 	"python":  true,
 	"python3": true,
 	"uvx":     true,
-	"docker":  true,
-	"deno":    true,
-	"bun":     true,
 }
 
 // defaultAllowedEnv is the set of environment variable names passed through by default.

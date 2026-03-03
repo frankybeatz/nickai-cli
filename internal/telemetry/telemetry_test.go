@@ -31,9 +31,23 @@ func TestDisabled_NoOp(t *testing.T) {
 	}
 }
 
+func TestInit_DefaultDisabled(t *testing.T) {
+	dir := t.TempDir()
+	Init(dir)
+
+	global.mu.Lock()
+	enabled := global.config.Enabled
+	global.mu.Unlock()
+
+	if enabled {
+		t.Fatal("expected telemetry to be disabled by default")
+	}
+}
+
 func TestEnabled_Record(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)
+	SetEnabled(true)
 
 	Record("info", "test", "action1", nil, map[string]string{"key": "val"})
 	Record("error", "test", "action2", fmt.Errorf("oops"), nil)
@@ -50,6 +64,7 @@ func TestEnabled_Record(t *testing.T) {
 func TestFlush_WritesDisk(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)
+	SetEnabled(true)
 
 	Record("info", "api", "test_call", nil, nil)
 	Record("error", "mcp", "connect", fmt.Errorf("timeout"), nil)
@@ -91,6 +106,7 @@ func TestFlush_WritesDisk(t *testing.T) {
 func TestPrune_RemovesOld(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)
+	SetEnabled(true)
 
 	// Set retain to 1 day.
 	global.mu.Lock()
@@ -136,6 +152,7 @@ func TestPrune_RemovesOld(t *testing.T) {
 func TestSummary_Format(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)
+	SetEnabled(true)
 
 	Record("error", "mcp", "connect", fmt.Errorf("refused"), nil)
 	Record("info", "api", "get_prices", nil, nil)
@@ -157,6 +174,7 @@ func TestSummary_Format(t *testing.T) {
 func TestRecordError_Helper(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)
+	SetEnabled(true)
 
 	RecordError("ai", "api_call", fmt.Errorf("rate limited"))
 
@@ -191,6 +209,7 @@ func TestRecordError_Helper(t *testing.T) {
 func TestRecordLatency_Helper(t *testing.T) {
 	dir := t.TempDir()
 	Init(dir)
+	SetEnabled(true)
 
 	RecordLatency("api", "get_prices", 150*time.Millisecond)
 
@@ -215,6 +234,7 @@ func TestConcurrency(t *testing.T) {
 
 	dir := t.TempDir()
 	Init(dir)
+	SetEnabled(true)
 
 	var wg sync.WaitGroup
 	for i := range 100 {

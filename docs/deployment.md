@@ -52,7 +52,7 @@ make docker-run
 docker build -t nickai .
 docker run -d \
   --name nickai-node \
-  -p 9400:9400 \
+  -p 127.0.0.1:9400:9400 \
   -v nickai-data:/home/nickai/.nickai \
   nickai
 ```
@@ -109,7 +109,10 @@ Nick Node (`nickai-node`) is a separate always-on process for:
 
 ```bash
 # Binary
-nickai-node --port 9400
+nickai-node --addr 127.0.0.1:9400
+
+# Remote bind requires auth token
+NICKAI_NODE_TOKEN=change-me nickai-node --addr 0.0.0.0:9400
 
 # Docker
 docker compose up -d
@@ -130,7 +133,7 @@ Nick Node exposes 10 RPCs on port 9400:
 - `CreateAlert` / `ListAlerts`
 - `GetStatus`
 
-Currently uses insecure transport (plaintext gRPC). See `docs/THREAT_MODEL.md` for security recommendations.
+By default, node binds to loopback only. If you bind to a non-loopback address, you must set `--token` or `NICKAI_NODE_TOKEN`.
 
 ## CI/CD Pipeline
 

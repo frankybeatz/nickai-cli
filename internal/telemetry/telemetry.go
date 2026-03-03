@@ -13,8 +13,8 @@ import (
 // Event represents a single telemetry event.
 type Event struct {
 	Timestamp time.Time         `json:"timestamp"`
-	Level     string            `json:"level"`              // "error", "warn", "info"
-	Category  string            `json:"category"`           // "mcp", "api", "order", "ai"
+	Level     string            `json:"level"`    // "error", "warn", "info"
+	Category  string            `json:"category"` // "mcp", "api", "order", "ai"
 	Action    string            `json:"action"`
 	Error     string            `json:"error,omitempty"`
 	Meta      map[string]string `json:"meta,omitempty"`
@@ -62,12 +62,12 @@ func (c *Collector) loadConfig() {
 	path := filepath.Join(c.configDir, "telemetry.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// Default: enabled, retain 30 days.
-		c.config = Config{Enabled: true, RetainDays: 30}
+		// Default: opt-in (disabled), retain 30 days.
+		c.config = Config{Enabled: false, RetainDays: 30}
 		return
 	}
 	if err := json.Unmarshal(data, &c.config); err != nil {
-		c.config = Config{Enabled: true, RetainDays: 30}
+		c.config = Config{Enabled: false, RetainDays: 30}
 		return
 	}
 	if c.config.RetainDays <= 0 {
@@ -85,7 +85,7 @@ func (c *Collector) saveConfig() error {
 		return err
 	}
 	path := filepath.Join(c.configDir, "telemetry.json")
-	return atomicWrite(path, data, 0644)
+	return atomicWrite(path, data, 0600)
 }
 
 // Record logs a telemetry event. No-op when disabled.
@@ -173,7 +173,7 @@ func (c *Collector) flush() {
 	if err != nil {
 		return
 	}
-	_ = atomicWrite(path, data, 0644)
+	_ = atomicWrite(path, data, 0600)
 }
 
 // Prune removes events older than RetainDays.
@@ -211,7 +211,7 @@ func (c *Collector) prune() {
 	if err != nil {
 		return
 	}
-	_ = atomicWrite(path, out, 0644)
+	_ = atomicWrite(path, out, 0600)
 }
 
 // Summary returns a human-readable summary of recent events.

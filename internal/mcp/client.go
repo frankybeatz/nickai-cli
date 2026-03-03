@@ -75,11 +75,15 @@ func (cm *ClientManager) connect(name string, cfg MCPServerConfig) (*MCPConnecti
 		return nil, fmt.Errorf("sandbox blocked %s: %w", name, err)
 	}
 
-	// Build env slice from map, inheriting current env.
-	env := os.Environ()
+	// Build a sanitized environment for the MCP subprocess.
+	// Keep only safe defaults + explicitly configured MCP vars.
+	envEntries := os.Environ()
+	allowedEnv := make(map[string]bool, len(cfg.Env))
 	for k, v := range cfg.Env {
-		env = append(env, k+"="+v)
+		allowedEnv[k] = true
+		envEntries = append(envEntries, k+"="+v)
 	}
+	env := SanitizeEnv(envEntries, allowedEnv)
 
 	client, err := mcpclient.NewStdioMCPClient(cfg.Command, env, cfg.Args...)
 	if err != nil {

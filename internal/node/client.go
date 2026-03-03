@@ -3,10 +3,12 @@ package node
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 
 	"github.com/nickai/cli/internal/node/pb"
 )
@@ -19,6 +21,7 @@ type Client struct {
 	conn   *grpc.ClientConn
 	client pb.NickNodeClient
 	addr   string
+	token  string
 }
 
 // NewClient connects to a NickNode server at the given address.
@@ -27,15 +30,24 @@ func NewClient(addr string) (*Client, error) {
 	if addr == "" {
 		addr = DefaultAddr
 	}
+	token := os.Getenv("NICKAI_NODE_TOKEN")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, addr,
+	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.CallContentSubtype("json")),
 		grpc.WithBlock(),
-	)
+	}
+	if token != "" {
+		dialOpts = append(dialOpts,
+			grpc.WithUnaryInterceptor(authUnaryClientInterceptor(token)),
+			grpc.WithStreamInterceptor(authStreamClientInterceptor(token)),
+		)
+	}
+
+	conn, err := grpc.DialContext(ctx, addr, dialOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to node at %s: %w", addr, err)
 	}
@@ -44,7 +56,37 @@ func NewClient(addr string) (*Client, error) {
 		conn:   conn,
 		client: pb.NewNickNodeClient(conn),
 		addr:   addr,
+		token:  token,
 	}, nil
+}
+
+func authUnaryClientInterceptor(token string) grpc.UnaryClientInterceptor {
+	return func(
+		ctx context.Context,
+		method string,
+		req any,
+		reply any,
+		cc *grpc.ClientConn,
+		invoker grpc.UnaryInvoker,
+		opts ...grpc.CallOption,
+	) error {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-node-token", token)
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
+func authStreamClientInterceptor(token string) grpc.StreamClientInterceptor {
+	return func(
+		ctx context.Context,
+		desc *grpc.StreamDesc,
+		cc *grpc.ClientConn,
+		method string,
+		streamer grpc.Streamer,
+		opts ...grpc.CallOption,
+	) (grpc.ClientStream, error) {
+		ctx = metadata.AppendToOutgoingContext(ctx, "x-node-token", token)
+		return streamer(ctx, desc, cc, method, opts...)
+	}
 }
 
 // Close closes the underlying gRPC connection.

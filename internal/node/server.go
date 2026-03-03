@@ -17,6 +17,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	"github.com/nickai/cli/internal/backtest"
@@ -58,6 +59,7 @@ type Server struct {
 	pb.UnimplementedNickNodeServer
 
 	startTime time.Time
+	authToken string
 
 	mu         sync.RWMutex
 	strategies map[string]*RunningStrategy
@@ -72,9 +74,10 @@ type Server struct {
 }
 
 // NewServer creates a new NickNode server.
-func NewServer() *Server {
+func NewServer(authToken string) *Server {
 	return &Server{
 		startTime:  time.Now(),
+		authToken:  authToken,
 		strategies: make(map[string]*RunningStrategy),
 		alerts:     make(map[string]*pb.AlertInfo),
 		btJobs:     make(map[string]*backtestJob),
@@ -90,11 +93,57 @@ func (s *Server) Start(addr string) error {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
-	s.grpcServer = grpc.NewServer()
+	opts := []grpc.ServerOption{}
+	if s.authToken != "" {
+		opts = append(opts,
+			grpc.UnaryInterceptor(s.authUnaryInterceptor),
+			grpc.StreamInterceptor(s.authStreamInterceptor),
+		)
+	}
+	s.grpcServer = grpc.NewServer(opts...)
 	pb.RegisterNickNodeServer(s.grpcServer, s)
 
 	logging.Info("nick-node starting", "addr", addr, "version", Version)
 	return s.grpcServer.Serve(lis)
+}
+
+func (s *Server) authUnaryInterceptor(
+	ctx context.Context,
+	req any,
+	_ *grpc.UnaryServerInfo,
+	handler grpc.UnaryHandler,
+) (any, error) {
+	if err := s.validateAuth(ctx); err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
+}
+
+func (s *Server) authStreamInterceptor(
+	srv any,
+	ss grpc.ServerStream,
+	_ *grpc.StreamServerInfo,
+	handler grpc.StreamHandler,
+) error {
+	if err := s.validateAuth(ss.Context()); err != nil {
+		return err
+	}
+	return handler(srv, ss)
+}
+
+func (s *Server) validateAuth(ctx context.Context) error {
+	if s.authToken == "" {
+		return nil
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return status.Error(codes.Unauthenticated, "missing node auth token")
+	}
+	values := md.Get("x-node-token")
+	if len(values) == 0 || values[0] != s.authToken {
+		return status.Error(codes.Unauthenticated, "invalid node auth token")
+	}
+	return nil
 }
 
 // Stop gracefully shuts down the server, stopping all strategies.

@@ -5,8 +5,9 @@
 // Usage:
 //
 //	nickai-node [flags]
-//	  --addr   listen address (default "0.0.0.0:9400")
+//	  --addr   listen address (default "127.0.0.1:9400")
 //	  --debug  enable debug logging to ~/.nickai/debug.log
+//	  --token  shared auth token (or NICKAI_NODE_TOKEN env var)
 //
 // Build:
 //
@@ -16,6 +17,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -28,8 +30,9 @@ import (
 var version = "dev"
 
 func main() {
-	addr := flag.String("addr", "0.0.0.0:9400", "listen address (host:port)")
+	addr := flag.String("addr", "127.0.0.1:9400", "listen address (host:port)")
 	debug := flag.Bool("debug", false, "enable debug logging")
+	token := flag.String("token", "", "shared auth token (or NICKAI_NODE_TOKEN env var)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -40,8 +43,15 @@ func main() {
 
 	logging.Init(*debug)
 	node.Version = version
+	if *token == "" {
+		*token = os.Getenv("NICKAI_NODE_TOKEN")
+	}
+	if !isLoopbackAddr(*addr) && *token == "" {
+		fmt.Fprintln(os.Stderr, "Error: --token (or NICKAI_NODE_TOKEN) is required for non-loopback bind addresses")
+		os.Exit(1)
+	}
 
-	srv := node.NewServer()
+	srv := node.NewServer(*token)
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
@@ -57,4 +67,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
