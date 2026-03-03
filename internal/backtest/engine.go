@@ -19,15 +19,18 @@ type Strategy struct {
 	ExitRules     []Condition `json:"exit_conditions"`
 	StopLossPct   float64     `json:"stop_loss_pct,omitempty"`
 	TakeProfitPct float64     `json:"take_profit_pct,omitempty"`
-	PositionSize  float64     `json:"position_size,omitempty"` // fraction, default 1.0
-	Period        string      `json:"period,omitempty"`        // e.g. "180d", "1y"
+	PositionSize  float64     `json:"position_size,omitempty"`  // fraction, default 1.0
+	Period        string      `json:"period,omitempty"`         // e.g. "180d", "1y"
+	SlippageBps   float64     `json:"slippage_bps,omitempty"`   // slippage in basis points (e.g. 10 = 0.1%)
+	CommissionBps float64     `json:"commission_bps,omitempty"` // commission in basis points per trade
 }
 
 // Condition represents a single rule for entry/exit.
 type Condition struct {
-	Indicator string  `json:"indicator"` // rsi, macd, macd_histogram, macd_signal, bollinger_upper, bollinger_lower, sma20, sma50, ema12, ema26, price, fear_greed
-	Operator  string  `json:"operator"`  // <, >, crosses_above, crosses_below
-	Value     float64 `json:"value"`
+	Indicator   string  `json:"indicator"`              // rsi, macd, macd_histogram, macd_signal, bollinger_upper, bollinger_lower, sma20, sma50, ema12, ema26, price, fear_greed
+	Operator    string  `json:"operator"`               // <, >, crosses_above, crosses_below
+	Value       float64 `json:"value"`                  // static threshold (used when CompareWith is empty)
+	CompareWith string  `json:"compare_with,omitempty"` // compare against another indicator instead of Value
 }
 
 // Result holds the output of a backtest run.
@@ -189,6 +192,10 @@ func Run(strat Strategy) (*Result, error) {
 		strat.PositionSize = 1.0
 	}
 
+	// Slippage and commission as multipliers (basis points → fraction).
+	slippage := strat.SlippageBps / 10000.0
+	commission := strat.CommissionBps / 10000.0
+
 	// Walk candles and simulate.
 	var trades []Trade
 	inPosition := false
@@ -205,12 +212,17 @@ func Run(strat Strategy) (*Result, error) {
 			// Check entry conditions.
 			if allConditionsMet(strat.EntryRules, snapshots, i) {
 				inPosition = true
-				entryPrice = price
+				// Simulate slippage: buying at a slightly higher price.
+				entryPrice = price * (1 + slippage)
 				entryTime = candles[i].OpenTime
+				// Commission on entry reduces equity.
+				equity *= (1 - commission*strat.PositionSize)
 			}
 		} else {
 			// Check exit conditions.
-			pnlPct := (price - entryPrice) / entryPrice * 100
+			// Simulate slippage: selling at a slightly lower price.
+			exitPrice := price * (1 - slippage)
+			pnlPct := (exitPrice - entryPrice) / entryPrice * 100
 
 			reason := ""
 			shouldExit := false
@@ -234,11 +246,13 @@ func Run(strat Strategy) (*Result, error) {
 			if shouldExit {
 				actualPnl := pnlPct * strat.PositionSize / 100
 				equity *= (1 + actualPnl)
+				// Commission on exit.
+				equity *= (1 - commission*strat.PositionSize)
 				trades = append(trades, Trade{
 					EntryTime:  entryTime,
 					ExitTime:   candles[i].OpenTime,
 					EntryPrice: entryPrice,
-					ExitPrice:  price,
+					ExitPrice:  exitPrice,
 					PnLPct:     pnlPct,
 					Reason:     reason,
 				})
@@ -251,14 +265,16 @@ func Run(strat Strategy) (*Result, error) {
 	// Close open position at end of period.
 	if inPosition && len(candles) > 0 {
 		lastPrice := closePrices[len(closePrices)-1]
-		pnlPct := (lastPrice - entryPrice) / entryPrice * 100
+		exitPrice := lastPrice * (1 - slippage)
+		pnlPct := (exitPrice - entryPrice) / entryPrice * 100
 		actualPnl := pnlPct * strat.PositionSize / 100
 		equity *= (1 + actualPnl)
+		equity *= (1 - commission*strat.PositionSize)
 		trades = append(trades, Trade{
 			EntryTime:  entryTime,
 			ExitTime:   candles[len(candles)-1].OpenTime,
 			EntryPrice: entryPrice,
-			ExitPrice:  lastPrice,
+			ExitPrice:  exitPrice,
 			PnLPct:     pnlPct,
 			Reason:     "period_end",
 		})
@@ -280,26 +296,42 @@ func allConditionsMet(conditions []Condition, snapshots []indicatorSnapshot, i i
 }
 
 // evalCondition evaluates a single condition at candle index i.
+// When CompareWith is set, the condition compares two indicators instead of
+// comparing an indicator against a static Value.
 func evalCondition(cond Condition, snapshots []indicatorSnapshot, i int) bool {
 	current := getIndicatorValue(cond.Indicator, snapshots[i])
 
+	// Resolve the comparison target: another indicator or a static value.
+	target := cond.Value
+	if cond.CompareWith != "" {
+		target = getIndicatorValue(cond.CompareWith, snapshots[i])
+	}
+
 	switch cond.Operator {
 	case "<":
-		return current < cond.Value
+		return current < target
 	case ">":
-		return current > cond.Value
+		return current > target
 	case "crosses_above":
 		if i == 0 {
 			return false
 		}
 		prev := getIndicatorValue(cond.Indicator, snapshots[i-1])
-		return prev <= cond.Value && current > cond.Value
+		prevTarget := target
+		if cond.CompareWith != "" {
+			prevTarget = getIndicatorValue(cond.CompareWith, snapshots[i-1])
+		}
+		return prev <= prevTarget && current > target
 	case "crosses_below":
 		if i == 0 {
 			return false
 		}
 		prev := getIndicatorValue(cond.Indicator, snapshots[i-1])
-		return prev >= cond.Value && current < cond.Value
+		prevTarget := target
+		if cond.CompareWith != "" {
+			prevTarget = getIndicatorValue(cond.CompareWith, snapshots[i-1])
+		}
+		return prev >= prevTarget && current < target
 	default:
 		return false
 	}
@@ -463,12 +495,12 @@ func sharpeRatio(curve []float64, candleInterval string) float64 {
 // needsFearGreed checks if any condition references the fear_greed indicator.
 func needsFearGreed(strat Strategy) bool {
 	for _, c := range strat.EntryRules {
-		if strings.ToLower(c.Indicator) == "fear_greed" {
+		if strings.ToLower(c.Indicator) == "fear_greed" || strings.ToLower(c.CompareWith) == "fear_greed" {
 			return true
 		}
 	}
 	for _, c := range strat.ExitRules {
-		if strings.ToLower(c.Indicator) == "fear_greed" {
+		if strings.ToLower(c.Indicator) == "fear_greed" || strings.ToLower(c.CompareWith) == "fear_greed" {
 			return true
 		}
 	}

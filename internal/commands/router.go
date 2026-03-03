@@ -62,6 +62,8 @@ const (
 	TypeOdds      // /odds
 	TypeLines     // /lines
 	TypeFunding   // /funding
+	TypeDashboard // /dashboard, /dash
+	TypeVibe      // /vibe
 
 	TypeUnknown
 )
@@ -76,80 +78,8 @@ type Result struct {
 }
 
 // allCommands maps every command name (including aliases) to its type.
-var allCommands = map[string]CommandType{
-	"/help":       TypeHelp,
-	"/agents":     TypeAgents,
-	"/templates":  TypeTemplates,
-	"/status":     TypeStatus,
-	"/orders":     TypeOrders,
-	"/price":      TypePrice,
-	"/p":          TypePrice,
-	"/buy":        TypeBuy,
-	"/b":          TypeBuy,
-	"/sell":       TypeSell,
-	"/s":          TypeSell,
-	"/config":     TypeConfig,
-	"/clear":      TypeClear,
-	"/quit":       TypeQuit,
-	"/exit":       TypeQuit,
-	"/credential": TypeCredential,
-	"/cred":       TypeCredential,
-	"/workflow":   TypeWorkflow,
-	"/wf":         TypeWorkflow,
-	"/logs":       TypeLogs,
-	"/log":        TypeLogs,
-	"/man":        TypeMan,
-	"/manual":     TypeMan,
-	"/watch":      TypeWatch,
-	"/snapshot":   TypeSnapshot,
-	"/snap":       TypeSnapshot,
-	"/market":     TypeMarket,
-	"/pnl":        TypePnl,
-	"/history":    TypeHistory,
-	"/journal":    TypeHistory,
-	"/alert":      TypeAlert,
-	"/chart":      TypeChart,
-	"/theme":      TypeTheme,
-	"/model":      TypeModel,
-	"/models":     TypeModel,
-	"/mcp":        TypeMCP,
-	"/trigger":    TypeTrigger,
-	"/trig":       TypeTrigger,
-	"/risk":       TypeRisk,
-	"/strategy":   TypeStrategy,
-	"/strat":      TypeStrategy,
-	"/notify":     TypeNotify,
-	"/analytics":  TypeAnalytics,
-	"/analyze":    TypeAnalyze,
-	"/auto":       TypeAuto,
-	"/automation": TypeAuto,
-	"/backtest":   TypeBacktest,
-	"/bt":         TypeBacktest,
-	"/polymarket": TypePolymarket,
-	"/pm":         TypePolymarket,
-	"/guide":      TypeGuide,
-	"/memory":     TypeMemory,
-	"/mem":        TypeMemory,
-	"/consensus":  TypeConsensus,
-	"/con":        TypeConsensus,
-
-	// Multi-vertical commands.
-	"/connect":   TypeConnect,
-	"/balances":  TypeBalances,
-	"/bal":       TypeBalances,
-	"/positions": TypePositions,
-	"/pos":       TypePositions,
-	"/markets":   TypeMarkets,
-	"/bet":       TypeBet,
-	"/wallet":    TypeWallet,
-	"/swap":      TypeSwap,
-	"/gas":       TypeGas,
-	"/stock":     TypeStock,
-	"/screen":    TypeScreen,
-	"/odds":      TypeOdds,
-	"/lines":     TypeLines,
-	"/funding":   TypeFunding,
-}
+// Generated from the unified Registry in defs.go.
+var allCommands = BuildCommandMap()
 
 // subcommandCommands lists NEW command types that parse SubCommand from args.
 // Existing commands (backtest, analyze, memory, etc.) parse subcommands

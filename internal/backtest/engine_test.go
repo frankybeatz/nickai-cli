@@ -67,6 +67,39 @@ func TestEvalCondition(t *testing.T) {
 	}
 }
 
+func TestEvalConditionCompareWith(t *testing.T) {
+	snapshots := []indicatorSnapshot{
+		{Price: 89, BollingerLower: 90, SMA20: 95, SMA50: 100},
+		{Price: 91, BollingerLower: 90, SMA20: 100, SMA50: 99},
+		{Price: 105, BollingerLower: 95, SMA20: 98, SMA50: 100},
+	}
+
+	tests := []struct {
+		name     string
+		cond     Condition
+		idx      int
+		expected bool
+	}{
+		// price < bollinger_lower at index 0 (89 < 90)
+		{"price below lower band", Condition{Indicator: "price", Operator: "<", CompareWith: "bollinger_lower"}, 0, true},
+		// price < bollinger_lower at index 1 (91 < 90 = false)
+		{"price above lower band", Condition{Indicator: "price", Operator: "<", CompareWith: "bollinger_lower"}, 1, false},
+		// sma20 crosses_above sma50 at index 1 (prev: 95<=100, curr: 100>99)
+		{"golden cross", Condition{Indicator: "sma20", Operator: "crosses_above", CompareWith: "sma50"}, 1, true},
+		// sma20 crosses_above sma50 at index 0 (no prev)
+		{"golden cross no prev", Condition{Indicator: "sma20", Operator: "crosses_above", CompareWith: "sma50"}, 0, false},
+		// sma20 crosses_below sma50 at index 2 (prev: 100>=99, curr: 98<100)
+		{"death cross", Condition{Indicator: "sma20", Operator: "crosses_below", CompareWith: "sma50"}, 2, true},
+	}
+
+	for _, tt := range tests {
+		got := evalCondition(tt.cond, snapshots, tt.idx)
+		if got != tt.expected {
+			t.Errorf("%s: evalCondition(%+v, idx=%d) = %v, want %v", tt.name, tt.cond, tt.idx, got, tt.expected)
+		}
+	}
+}
+
 func TestGetIndicatorValue(t *testing.T) {
 	snap := indicatorSnapshot{
 		RSI:            45.5,
@@ -186,6 +219,32 @@ func TestMaxDrawdown(t *testing.T) {
 		if math.Abs(got-tt.expected) > 0.01 {
 			t.Errorf("test %d: maxDrawdown = %f, want %f", i, got, tt.expected)
 		}
+	}
+}
+
+func TestSharpeRatio(t *testing.T) {
+	// Flat equity curve → zero Sharpe.
+	if got := sharpeRatio([]float64{1.0, 1.0, 1.0}, "1d"); got != 0 {
+		t.Errorf("flat curve: Sharpe = %f, want 0", got)
+	}
+
+	// Single point → zero.
+	if got := sharpeRatio([]float64{1.0}, "1d"); got != 0 {
+		t.Errorf("single point: Sharpe = %f, want 0", got)
+	}
+
+	// Monotonically increasing → positive Sharpe.
+	curve := []float64{1.0, 1.01, 1.02, 1.03, 1.04}
+	got := sharpeRatio(curve, "1d")
+	if got <= 0 {
+		t.Errorf("increasing curve: Sharpe = %f, want > 0", got)
+	}
+
+	// Hourly annualization should be larger than daily for same curve.
+	hourly := sharpeRatio(curve, "1h")
+	daily := sharpeRatio(curve, "1d")
+	if hourly <= daily {
+		t.Errorf("1h Sharpe (%f) should be > 1d Sharpe (%f) for same returns", hourly, daily)
 	}
 }
 

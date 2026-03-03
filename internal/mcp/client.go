@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/nickai/cli/internal/logging"
 	"github.com/nickai/cli/internal/risk"
 	"github.com/nickai/cli/internal/tools"
 )
@@ -33,6 +33,7 @@ type FailedConnection struct {
 type ClientManager struct {
 	connections []*MCPConnection
 	failed      []FailedConnection
+	cfg         *MCPConfig // stored for reconnection
 }
 
 // NewClientManager creates an empty client manager.
@@ -43,10 +44,12 @@ func NewClientManager() *ClientManager {
 // ConnectAll reads the MCP config and starts all configured servers.
 // Errors on individual servers are logged but do not block others.
 func (cm *ClientManager) ConnectAll(cfg *MCPConfig) {
+	cm.cfg = cfg
+	logging.Info("mcp connect_all starting", "servers", len(cfg.MCPServers))
 	for name, serverCfg := range cfg.MCPServers {
 		conn, err := cm.connect(name, serverCfg)
 		if err != nil {
-			log.Printf("MCP: failed to connect to %s: %v", name, err)
+			logging.Warn("mcp server failed", "name", name, "error", err)
 			cm.failed = append(cm.failed, FailedConnection{Name: name, Error: err.Error()})
 			continue
 		}
@@ -54,11 +57,14 @@ func (cm *ClientManager) ConnectAll(cfg *MCPConfig) {
 		if entry := GetEntry(name); entry != nil {
 			conn.Capabilities = entry.Capabilities
 		}
+		logging.Info("mcp server connected", "name", name, "tools", len(conn.Tools))
 		cm.connections = append(cm.connections, conn)
 	}
 }
 
 func (cm *ClientManager) connect(name string, cfg MCPServerConfig) (*MCPConnection, error) {
+	logging.Debug("mcp connecting", "name", name, "command", cfg.Command, "args", cfg.Args)
+
 	// Build env slice from map, inheriting current env.
 	env := os.Environ()
 	for k, v := range cfg.Env {
@@ -71,7 +77,8 @@ func (cm *ClientManager) connect(name string, cfg MCPServerConfig) (*MCPConnecti
 	}
 
 	// Use a timeout so a hanging server doesn't block startup forever.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// 30s allows time for first-time npx package downloads.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	initReq := mcp.InitializeRequest{}
@@ -214,6 +221,7 @@ func makeProxyExecutor(client *mcpclient.Client, toolName string) tools.ToolFunc
 
 		result, err := client.CallTool(ctx, callReq)
 		if err != nil {
+			logging.Warn("mcp tool call failed", "tool", toolName, "error", err)
 			return "", err
 		}
 
@@ -241,8 +249,63 @@ func getTextFromResult(result *mcp.CallToolResult) string {
 	return "{}"
 }
 
+// HealthCheck pings each active connection via ListTools. Dead connections
+// are closed and moved to the failed list. Returns the number removed.
+func (cm *ClientManager) HealthCheck() int {
+	var alive []*MCPConnection
+	removed := 0
+	for _, conn := range cm.connections {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := conn.Client.ListTools(ctx, mcp.ListToolsRequest{})
+		cancel()
+		if err != nil {
+			logging.Warn("mcp health check failed", "name", conn.Name, "error", err)
+			conn.Client.Close()
+			cm.failed = append(cm.failed, FailedConnection{Name: conn.Name, Error: "health check: " + err.Error()})
+			removed++
+		} else {
+			alive = append(alive, conn)
+		}
+	}
+	cm.connections = alive
+	return removed
+}
+
+// ReconnectFailed attempts to reconnect servers that previously failed.
+// Successfully reconnected servers are moved back to the active list.
+// Returns the number of servers recovered.
+func (cm *ClientManager) ReconnectFailed() int {
+	if cm.cfg == nil || len(cm.failed) == 0 {
+		return 0
+	}
+	var stillFailed []FailedConnection
+	recovered := 0
+	for _, f := range cm.failed {
+		serverCfg, ok := cm.cfg.MCPServers[f.Name]
+		if !ok {
+			stillFailed = append(stillFailed, f)
+			continue
+		}
+		conn, err := cm.connect(f.Name, serverCfg)
+		if err != nil {
+			logging.Debug("mcp reconnect still failing", "name", f.Name, "error", err)
+			stillFailed = append(stillFailed, FailedConnection{Name: f.Name, Error: err.Error()})
+			continue
+		}
+		if entry := GetEntry(f.Name); entry != nil {
+			conn.Capabilities = entry.Capabilities
+		}
+		logging.Info("mcp server reconnected", "name", f.Name, "tools", len(conn.Tools))
+		cm.connections = append(cm.connections, conn)
+		recovered++
+	}
+	cm.failed = stillFailed
+	return recovered
+}
+
 // CloseAll shuts down all MCP server connections.
 func (cm *ClientManager) CloseAll() {
+	logging.Debug("mcp closing all connections", "count", len(cm.connections))
 	for _, conn := range cm.connections {
 		conn.Client.Close()
 	}

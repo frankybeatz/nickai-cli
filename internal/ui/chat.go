@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	crand "crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -173,6 +174,15 @@ type mcpConnectedMsg struct {
 	manager *mcp.ClientManager
 }
 
+// mcpHealthMsg triggers a periodic MCP health check + reconnect.
+type mcpHealthMsg struct{}
+
+// mcpHealthResultMsg carries the result of a health check cycle.
+type mcpHealthResultMsg struct {
+	removed   int
+	recovered int
+}
+
 // tickerFetchMsg signals time to fetch new ticker data.
 type tickerFetchMsg struct{}
 
@@ -217,6 +227,8 @@ type Model struct {
 	commandBuffer string // for COMMAND mode (:buffer)
 	searchBuffer  string // for SEARCH mode (/pattern)
 	searchPattern string // last search pattern
+	searchMatches []int  // line indices of all matches
+	searchCurrent int    // current match index (for n/N)
 	normalKeyBuf  string // for multi-key sequences (gg)
 	viewContent   string // cached viewport content for search
 
@@ -371,6 +383,8 @@ func New() Model {
 		if cfg.Model != "" {
 			_ = agent.SetModel(cfg.Model)
 		}
+	} else {
+		ti.Placeholder = "No API key configured — type /config set to get started"
 	}
 
 	credStore, _ := credential.Load()
@@ -1029,8 +1043,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.manager != nil {
 			m.mcpManager = msg.manager
 			m.welcomeDirty = true
+			m.updatePlaceholder()
 		}
-		return m, nil
+		// Start periodic health check (every 5 minutes).
+		return m, tea.Tick(5*time.Minute, func(t time.Time) tea.Msg {
+			return mcpHealthMsg{}
+		})
+
+	case mcpHealthMsg:
+		mgr := m.mcpManager
+		if mgr == nil {
+			return m, nil
+		}
+		return m, func() tea.Msg {
+			removed := mgr.HealthCheck()
+			recovered := mgr.ReconnectFailed()
+			return mcpHealthResultMsg{removed: removed, recovered: recovered}
+		}
+
+	case mcpHealthResultMsg:
+		if msg.recovered > 0 {
+			// Re-register tools from reconnected servers.
+			if m.mcpManager != nil && m.toolRegistry != nil {
+				m.mcpManager.RegisterTools(m.toolRegistry, mcp.RiskLimitsFunc(func() *risk.RiskLimits {
+					return m.riskLimits
+				}))
+				if m.agent != nil {
+					m.agent.SetVibe(m.agent.VibeID())
+				}
+			}
+			m.welcomeDirty = true
+		}
+		// Re-schedule next health check.
+		return m, tea.Tick(5*time.Minute, func(t time.Time) tea.Msg {
+			return mcpHealthMsg{}
+		})
 
 	case tickerFetchMsg:
 		if !m.tickerTicking {
@@ -1285,11 +1332,8 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		case commands.TypeChat:
 			// Streaming AI call with loading spinner.
-			if m.agent == nil {
-				m.addBotMessage(BotMsgStyle.Render("nick: ") +
-					"I need an Anthropic API key to chat. Set one with " +
-					CommandStyle.Render("/config set anthropic_key <key>") +
-					" or " + DimStyle.Render("export ANTHROPIC_API_KEY=..."))
+			if msg := m.requireAgent(); msg != "" {
+				m.addBotMessage(msg)
 				m.updateViewport()
 				return m, nil
 			}
@@ -1308,7 +1352,7 @@ func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 				func() tea.Msg {
 					defer close(tokenCh)
-					resp, err := agent.ChatStream(userInput, tokenCh)
+					resp, err := agent.ChatStream(context.Background(), userInput, tokenCh)
 					return aiStreamDoneMsg{finalContent: resp, err: err}
 				},
 				waitForStreamToken(tokenCh),
@@ -1780,6 +1824,16 @@ func (m Model) updateNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.normalKeyBuf = ""
 		return m, nil
 
+	// Next search match.
+	case "n":
+		m.nextSearchMatch()
+		return m, nil
+
+	// Previous search match.
+	case "N":
+		m.prevSearchMatch()
+		return m, nil
+
 	// Help overlay.
 	case "?":
 		m.dialog = DialogState{Active: DialogHelp}
@@ -1988,6 +2042,9 @@ func (m Model) updateSearchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) executeSearch() {
+	m.searchMatches = nil
+	m.searchCurrent = 0
+
 	if m.searchPattern == "" {
 		return
 	}
@@ -1995,10 +2052,33 @@ func (m *Model) executeSearch() {
 	lines := strings.Split(m.viewContent, "\n")
 	for i, line := range lines {
 		if strings.Contains(strings.ToLower(line), pattern) {
-			m.viewport.SetYOffset(i)
-			return
+			m.searchMatches = append(m.searchMatches, i)
 		}
 	}
+	if len(m.searchMatches) > 0 {
+		m.viewport.SetYOffset(m.searchMatches[0])
+	}
+}
+
+// nextSearchMatch jumps to the next search match (n key in Normal mode).
+func (m *Model) nextSearchMatch() {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchCurrent = (m.searchCurrent + 1) % len(m.searchMatches)
+	m.viewport.SetYOffset(m.searchMatches[m.searchCurrent])
+}
+
+// prevSearchMatch jumps to the previous search match (N key in Normal mode).
+func (m *Model) prevSearchMatch() {
+	if len(m.searchMatches) == 0 {
+		return
+	}
+	m.searchCurrent--
+	if m.searchCurrent < 0 {
+		m.searchCurrent = len(m.searchMatches) - 1
+	}
+	m.viewport.SetYOffset(m.searchMatches[m.searchCurrent])
 }
 
 // --- CONFIRM mode ---
@@ -2395,17 +2475,24 @@ func (m Model) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyUp:
 			if m.dialog.Cursor > 0 {
 				m.dialog.Cursor--
+				if m.dialog.Cursor < m.dialog.ScrollOffset {
+					m.dialog.ScrollOffset = m.dialog.Cursor
+				}
 			}
 			return m, nil
 		case tea.KeyDown:
 			if m.dialog.Cursor < len(names)-1 {
 				m.dialog.Cursor++
+				if m.dialog.Cursor >= m.dialog.ScrollOffset+maxVisibleDialogItems {
+					m.dialog.ScrollOffset = m.dialog.Cursor - maxVisibleDialogItems + 1
+				}
 			}
 			return m, nil
 		case tea.KeyEnter:
 			selected := names[m.dialog.Cursor]
 			if t, ok := Themes[selected]; ok {
 				ApplyTheme(t)
+				m.refreshInputStyles()
 				m.cfg.Theme = selected
 				_ = m.cfg.Save()
 				m.addBotMessage(BotMsgStyle.Render("nick: ") +
@@ -2419,11 +2506,17 @@ func (m Model) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "j":
 			if m.dialog.Cursor < len(names)-1 {
 				m.dialog.Cursor++
+				if m.dialog.Cursor >= m.dialog.ScrollOffset+maxVisibleDialogItems {
+					m.dialog.ScrollOffset = m.dialog.Cursor - maxVisibleDialogItems + 1
+				}
 			}
 			return m, nil
 		case "k":
 			if m.dialog.Cursor > 0 {
 				m.dialog.Cursor--
+				if m.dialog.Cursor < m.dialog.ScrollOffset {
+					m.dialog.ScrollOffset = m.dialog.Cursor
+				}
 			}
 			return m, nil
 		}
@@ -2438,11 +2531,17 @@ func (m Model) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyUp:
 			if m.dialog.Cursor > 0 {
 				m.dialog.Cursor--
+				if m.dialog.Cursor < m.dialog.ScrollOffset {
+					m.dialog.ScrollOffset = m.dialog.Cursor
+				}
 			}
 			return m, nil
 		case tea.KeyDown:
 			if m.dialog.Cursor < len(models)-1 {
 				m.dialog.Cursor++
+				if m.dialog.Cursor >= m.dialog.ScrollOffset+maxVisibleDialogItems {
+					m.dialog.ScrollOffset = m.dialog.Cursor - maxVisibleDialogItems + 1
+				}
 			}
 			return m, nil
 		case tea.KeyEnter:
@@ -2469,11 +2568,17 @@ func (m Model) updateDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "j":
 			if m.dialog.Cursor < len(models)-1 {
 				m.dialog.Cursor++
+				if m.dialog.Cursor >= m.dialog.ScrollOffset+maxVisibleDialogItems {
+					m.dialog.ScrollOffset = m.dialog.Cursor - maxVisibleDialogItems + 1
+				}
 			}
 			return m, nil
 		case "k":
 			if m.dialog.Cursor > 0 {
 				m.dialog.Cursor--
+				if m.dialog.Cursor < m.dialog.ScrollOffset {
+					m.dialog.ScrollOffset = m.dialog.Cursor
+				}
 			}
 			return m, nil
 		}
@@ -2987,10 +3092,8 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 
 	case "activate":
 		// /backtest activate <preset> <symbol> [value]
-		if m.agent == nil {
-			return BotMsgStyle.Render("nick: ") +
-				"I need an Anthropic API key to activate strategies. Set one with " +
-				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		if msg := m.requireAgent(); msg != "" {
+			return msg, nil
 		}
 		if len(args) < 3 {
 			return ErrorStyle.Render("  Usage: ") +
@@ -3022,7 +3125,7 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 			func() tea.Msg {
 				defer close(tokenCh)
-				resp, err := agent.ChatStream(prompt, tokenCh)
+				resp, err := agent.ChatStream(context.Background(), prompt, tokenCh)
 				return aiStreamDoneMsg{finalContent: resp, err: err}
 			},
 			waitForStreamToken(tokenCh),
@@ -3031,10 +3134,8 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 
 	default:
 		// Pass to AI as natural language backtest request.
-		if m.agent == nil {
-			return BotMsgStyle.Render("nick: ") +
-				"I need an Anthropic API key to chat. Set one with " +
-				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		if msg := m.requireAgent(); msg != "" {
+			return msg, nil
 		}
 
 		prompt := "Backtest the following strategy using the backtest_strategy tool: " + strings.Join(args, " ")
@@ -3053,7 +3154,7 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 			func() tea.Msg {
 				defer close(tokenCh)
-				resp, err := agent.ChatStream(prompt, tokenCh)
+				resp, err := agent.ChatStream(context.Background(), prompt, tokenCh)
 				return aiStreamDoneMsg{finalContent: resp, err: err}
 			},
 			waitForStreamToken(tokenCh),
@@ -3065,10 +3166,8 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 // --- /polymarket handler ---
 
 func (m *Model) handlePolymarket(args []string) (string, tea.Cmd) {
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key for Polymarket analysis. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 
 	sub := "scan"
@@ -3117,7 +3216,7 @@ func (m *Model) handlePolymarket(args []string) (string, tea.Cmd) {
 		tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 		func() tea.Msg {
 			defer close(tokenCh)
-			resp, err := agent.ChatStream(prompt, tokenCh)
+			resp, err := agent.ChatStream(context.Background(), prompt, tokenCh)
 			return aiStreamDoneMsg{finalContent: resp, err: err}
 		},
 		waitForStreamToken(tokenCh),
@@ -3360,10 +3459,8 @@ func (m *Model) handleAnalyze(args []string) (string, tea.Cmd) {
 
 // runAnalysisPreset sends a preset's AI prompt through the agent.
 func (m *Model) runAnalysisPreset(preset *backtest.AnalysisPreset, extraArgs string) (string, tea.Cmd) {
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key to run analysis presets. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 
 	// Check MCP tool requirements.
@@ -3397,7 +3494,7 @@ func (m *Model) runAnalysisPreset(preset *backtest.AnalysisPreset, extraArgs str
 		tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 		func() tea.Msg {
 			defer close(tokenCh)
-			resp, err := agent.ChatStream(prompt, tokenCh)
+			resp, err := agent.ChatStream(context.Background(), prompt, tokenCh)
 			return aiStreamDoneMsg{finalContent: resp, err: err}
 		},
 		waitForStreamToken(tokenCh),
@@ -3494,10 +3591,8 @@ func (m *Model) handleConnect(args []string) string {
 }
 
 func (m *Model) handleMarkets(args []string) (string, tea.Cmd) {
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key for market search. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 
 	prompt := "Show trending prediction markets with highest volume. Use available polymarket or prediction market tools."
@@ -3514,10 +3609,8 @@ func (m *Model) handleBet(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/bet <market> <yes|no> <amount>") + "\n" +
 			DimStyle.Render("  Example: /bet \"Trump wins\" yes 50"), nil
 	}
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 	prompt := fmt.Sprintf("Place a prediction market bet: market=%s, side=%s, amount=$%s. Use the polymarket tools to execute.",
 		args[0], args[1], args[2])
@@ -3536,19 +3629,15 @@ func (m *Model) handleWallet(args []string) (string, tea.Cmd) {
 			return ErrorStyle.Render("  Usage: ") +
 				CommandStyle.Render("/wallet balance <address>"), nil
 		}
-		if m.agent == nil {
-			return BotMsgStyle.Render("nick: ") +
-				"I need an Anthropic API key. Set one with " +
-				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		if msg := m.requireAgent(); msg != "" {
+			return msg, nil
 		}
 		prompt := "Check the wallet balance for address: " + args[1] + ". Use onchain/web3 MCP tools if available."
 		return m.streamToAI(prompt, "Checking wallet...", "wallet")
 
 	default:
-		if m.agent == nil {
-			return BotMsgStyle.Render("nick: ") +
-				"I need an Anthropic API key. Set one with " +
-				CommandStyle.Render("/config set anthropic_key <key>"), nil
+		if msg := m.requireAgent(); msg != "" {
+			return msg, nil
 		}
 		prompt := "Wallet command: " + strings.Join(args, " ")
 		return m.streamToAI(prompt, "Processing wallet request...", "wallet")
@@ -3561,10 +3650,8 @@ func (m *Model) handleSwap(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/swap <from> <to> <amount>") + "\n" +
 			DimStyle.Render("  Example: /swap SOL USDC 10"), nil
 	}
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 
 	from := strings.ToUpper(args[0])
@@ -3575,10 +3662,8 @@ func (m *Model) handleSwap(args []string) (string, tea.Cmd) {
 }
 
 func (m *Model) handleGas(args []string) (string, tea.Cmd) {
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 	chain := "ethereum"
 	if len(args) > 0 {
@@ -3594,10 +3679,8 @@ func (m *Model) handleStock(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/stock <ticker>") + "\n" +
 			DimStyle.Render("  Example: /stock AAPL"), nil
 	}
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 	ticker := strings.ToUpper(args[0])
 	prompt := fmt.Sprintf("Analyze stock %s — current price, key fundamentals (P/E, market cap, revenue), and recent news. Use Alpaca MCP if connected, otherwise use your knowledge.", ticker)
@@ -3610,10 +3693,8 @@ func (m *Model) handleScreen(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/screen <filters>") + "\n" +
 			DimStyle.Render("  Example: /screen high dividend tech stocks under $50"), nil
 	}
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 	prompt := "Screen stocks matching these criteria: " + strings.Join(args, " ") + ". List top 10 matches with ticker, price, and why they match."
 	return m.streamToAI(prompt, "Screening stocks...", "stock")
@@ -3625,10 +3706,8 @@ func (m *Model) handleOdds(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/odds <event>") + "\n" +
 			DimStyle.Render("  Example: /odds Lakers vs Celtics"), nil
 	}
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 	prompt := "Find current betting odds for: " + strings.Join(args, " ") + ". Show moneyline, spread, and over/under from major sportsbooks. Use brave-search MCP or web tools if available."
 	return m.streamToAI(prompt, "Finding odds...", "bet")
@@ -3640,20 +3719,16 @@ func (m *Model) handleLines(args []string) (string, tea.Cmd) {
 			CommandStyle.Render("/lines <event>") + "\n" +
 			DimStyle.Render("  Example: /lines Super Bowl"), nil
 	}
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 	prompt := "Show line movement and betting line history for: " + strings.Join(args, " ") + ". Highlight any significant shifts. Use brave-search MCP or web tools if available."
 	return m.streamToAI(prompt, "Checking line movement...", "bet")
 }
 
 func (m *Model) handleFunding(args []string) (string, tea.Cmd) {
-	if m.agent == nil {
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>"), nil
+	if msg := m.requireAgent(); msg != "" {
+		return msg, nil
 	}
 	prompt := "Show current funding rates for major perpetual contracts (BTC, ETH, SOL, and any other notable rates). Include annualized rates and direction. Use exchange MCP tools if available."
 	if len(args) > 0 {
@@ -3680,7 +3755,7 @@ func (m *Model) streamToAI(prompt, loadingText, origin string) (string, tea.Cmd)
 		tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 		func() tea.Msg {
 			defer close(tokenCh)
-			resp, err := agent.ChatStream(prompt, tokenCh)
+			resp, err := agent.ChatStream(context.Background(), prompt, tokenCh)
 			return aiStreamDoneMsg{finalContent: resp, err: err}
 		},
 		waitForStreamToken(tokenCh),
@@ -3804,6 +3879,37 @@ func (m *Model) addBotMessage(content string) {
 		content: content,
 		isUser:  false,
 	})
+}
+
+// requireAgent returns an error message if no AI agent is configured, or empty string if OK.
+func (m *Model) requireAgent() string {
+	if m.agent != nil {
+		return ""
+	}
+	return BotMsgStyle.Render("nick: ") +
+		"I need an Anthropic API key to use AI features. Set one with " +
+		CommandStyle.Render("/config set anthropic_key <key>") +
+		" or " + DimStyle.Render("export ANTHROPIC_API_KEY=...")
+}
+
+// refreshInputStyles updates the textInput styles to match the current theme.
+// Must be called after ApplyTheme().
+func (m *Model) refreshInputStyles() {
+	m.textInput.PromptStyle = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true)
+	m.textInput.TextStyle = lipgloss.NewStyle().Foreground(ColorWhite)
+	m.textInput.PlaceholderStyle = lipgloss.NewStyle().Foreground(ColorDim)
+}
+
+// updatePlaceholder sets the input placeholder based on current state.
+func (m *Model) updatePlaceholder() {
+	switch {
+	case m.agent == nil:
+		m.textInput.Placeholder = "No API key configured — type /config set to get started"
+	case m.mcpManager != nil && m.mcpManager.ConnectionCount() > 0:
+		m.textInput.Placeholder = "Ask NickAI anything, type / for commands, or use MCP tools..."
+	default:
+		m.textInput.Placeholder = "Ask NickAI anything or type / for commands..."
+	}
 }
 
 // --- Command rendering ---
@@ -3964,18 +4070,15 @@ func (m *Model) renderResult(r commands.Result) string {
 		return RenderHistory(m.client, m.width)
 
 	case commands.TypeChat:
-		if m.agent != nil {
-			resp, err := m.agent.Chat(r.Input)
-			if err != nil {
-				return ErrorStyle.Render("  AI error: ") + err.Error()
-			}
-			rendered := renderMarkdown(resp, m.width-8)
-			return BotMsgStyle.Render("nick:") + "\n" + rendered
+		if msg := m.requireAgent(); msg != "" {
+			return msg
 		}
-		return BotMsgStyle.Render("nick: ") +
-			"I need an Anthropic API key to chat. Set one with " +
-			CommandStyle.Render("/config set anthropic_key <key>") +
-			" or " + DimStyle.Render("export ANTHROPIC_API_KEY=...")
+		resp, err := m.agent.Chat(context.Background(), r.Input)
+		if err != nil {
+			return ErrorStyle.Render("  AI error: ") + err.Error()
+		}
+		rendered := renderMarkdown(resp, m.width-8)
+		return BotMsgStyle.Render("nick:") + "\n" + rendered
 
 	default:
 		return ""
@@ -4075,6 +4178,7 @@ func (m *Model) handleConfig(args []string) string {
 			}
 			m.agent.SetOpenRouterKey(orKey)
 		}
+		m.updatePlaceholder()
 
 		return RenderConfigSet(key, value)
 
@@ -4729,6 +4833,7 @@ func (m *Model) handleTheme(args []string) string {
 	}
 
 	ApplyTheme(t)
+	m.refreshInputStyles()
 	m.cfg.Theme = name
 	_ = m.cfg.Save()
 
@@ -4791,6 +4896,7 @@ func (m *Model) handleModel(args []string) string {
 		if orKey != "" {
 			m.agent.SetOpenRouterKey(orKey)
 		}
+		m.updatePlaceholder()
 	}
 
 	if err := m.agent.SetModel(modelID); err != nil {
@@ -5194,9 +5300,9 @@ func (m Model) View() string {
 		case DialogHelp:
 			dialog = renderHelpDialog(m.width, m.height)
 		case DialogTheme:
-			dialog = renderThemeDialog(m.dialog.Cursor, m.width, m.height)
+			dialog = renderThemeDialog(m.dialog.Cursor, m.dialog.ScrollOffset, m.width, m.height)
 		case DialogModel:
-			dialog = renderModelDialog(m.dialog.Cursor, m.agent, m.width, m.height)
+			dialog = renderModelDialog(m.dialog.Cursor, m.dialog.ScrollOffset, m.agent, m.width, m.height)
 		case DialogPalette:
 			dialog = renderPaletteDialog(m.dialog.Cursor, m.dialog.ScrollOffset, m.dialog.Filter, m.dialog.FilteredList, m.width, m.height)
 		}
@@ -5430,8 +5536,16 @@ func (m Model) renderInputBar() string {
 			DimStyle.Render("  /") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render("search") +
 			DimStyle.Render("  q") + lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(":quit")
 
+		// Show search match count if a pattern is active.
+		searchHint := ""
+		if m.searchPattern != "" && len(m.searchMatches) > 0 {
+			searchHint = fmt.Sprintf("  /%s [%d/%d]", m.searchPattern, m.searchCurrent+1, len(m.searchMatches))
+		} else if m.searchPattern != "" {
+			searchHint = fmt.Sprintf("  /%s [0/0]", m.searchPattern)
+		}
+
 		status := m.statusIndicators()
-		middle := hints + "  " + status
+		middle := hints + lipgloss.NewStyle().Foreground(ColorWarning).Render(searchHint) + "  " + status
 		middleWidth := m.width - 14
 		if middleWidth < 0 {
 			middleWidth = 0

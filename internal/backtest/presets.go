@@ -26,6 +26,8 @@ var backtestPresets = []PresetStrategy{
 			TakeProfitPct: 15,
 			PositionSize:  1.0,
 			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
 		},
 	},
 	{
@@ -38,29 +40,36 @@ var backtestPresets = []PresetStrategy{
 			TakeProfitPct: 0,
 			PositionSize:  1.0,
 			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
 		},
 	},
 	{
-		Description: "Buy at lower Bollinger Band, sell at SMA20",
+		Description: "Buy at lower Bollinger Band, take profit at +10%",
 		Strategy: Strategy{
-			Name:        "bollinger-bounce",
-			EntryRules:  []Condition{{Indicator: "price", Operator: "<", Value: 0}}, // will be dynamically compared
-			ExitRules:   []Condition{},                                               // uses take profit
-			StopLossPct: 5, TakeProfitPct: 10,
-			PositionSize: 1.0,
-			Period:       "180d",
+			Name:          "bollinger-bounce",
+			EntryRules:    []Condition{{Indicator: "price", Operator: "<", CompareWith: "bollinger_lower"}},
+			ExitRules:     []Condition{},
+			StopLossPct:   5,
+			TakeProfitPct: 10,
+			PositionSize:  1.0,
+			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
 		},
 	},
 	{
 		Description: "Enter when SMA20 crosses above SMA50 (golden cross)",
 		Strategy: Strategy{
 			Name:          "golden-cross",
-			EntryRules:    []Condition{{Indicator: "sma20", Operator: "crosses_above", Value: 0}},
-			ExitRules:     []Condition{{Indicator: "sma20", Operator: "crosses_below", Value: 0}},
+			EntryRules:    []Condition{{Indicator: "sma20", Operator: "crosses_above", CompareWith: "sma50"}},
+			ExitRules:     []Condition{{Indicator: "sma20", Operator: "crosses_below", CompareWith: "sma50"}},
 			StopLossPct:   10,
 			TakeProfitPct: 0,
 			PositionSize:  1.0,
 			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
 		},
 	},
 	{
@@ -76,6 +85,8 @@ var backtestPresets = []PresetStrategy{
 			TakeProfitPct: 20,
 			PositionSize:  1.0,
 			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
 		},
 	},
 	{
@@ -91,6 +102,8 @@ var backtestPresets = []PresetStrategy{
 			TakeProfitPct: 20,
 			PositionSize:  1.0,
 			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
 		},
 	},
 	{
@@ -98,7 +111,7 @@ var backtestPresets = []PresetStrategy{
 		Strategy: Strategy{
 			Name: "dip-buyer",
 			EntryRules: []Condition{
-				{Indicator: "price", Operator: "<", Value: 0}, // compared to bollinger_lower dynamically
+				{Indicator: "price", Operator: "<", CompareWith: "bollinger_lower"},
 				{Indicator: "fear_greed", Operator: "<", Value: 30},
 			},
 			ExitRules:     []Condition{},
@@ -106,6 +119,8 @@ var backtestPresets = []PresetStrategy{
 			TakeProfitPct: 12,
 			PositionSize:  1.0,
 			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
 		},
 	},
 }

@@ -3,9 +3,13 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/nickai/cli/internal/cli"
 	"github.com/nickai/cli/internal/config"
+	"github.com/nickai/cli/internal/logging"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/ui"
 )
@@ -14,6 +18,19 @@ import (
 var version = "dev"
 
 func main() {
+	// Check for --debug flag (can appear anywhere in args).
+	debug := os.Getenv("NICKAI_DEBUG") == "1"
+	for _, arg := range os.Args[1:] {
+		if arg == "--debug" {
+			debug = true
+			break
+		}
+	}
+	logging.Init(debug)
+	if debug {
+		logging.Info("nickai starting", "version", version, "args", os.Args)
+	}
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--version", "-v", "version":
@@ -23,17 +40,20 @@ func main() {
 			fmt.Println("NickAI CLI — Conversational trading terminal")
 			fmt.Println()
 			fmt.Printf("  Usage: nickai [command] [flags]\n\n")
-			fmt.Println("  Commands:")
+			fmt.Println(cli.CLICommands())
+			fmt.Println()
+			fmt.Println("  Other Commands:")
 			fmt.Println("    mcp serve        Start MCP server (for Claude Desktop / Cursor / VS Code)")
 			fmt.Println()
 			fmt.Println("  Flags:")
 			fmt.Println("    --help, -h       Show this help message")
 			fmt.Println("    --version, -v    Print version")
+			fmt.Println("    --json, -j       JSON output (for price, portfolio, orders)")
+			fmt.Println("    --debug          Enable debug logging to ~/.nickai/debug.log")
 			fmt.Println()
-			fmt.Println("  Inside the terminal:")
-			fmt.Println("    /help            List all commands")
-			fmt.Println("    /config          Manage API keys")
-			fmt.Println("    /man <command>   Detailed manual pages")
+			fmt.Println("  Interactive mode:")
+			fmt.Println("    nickai           Launch the TUI")
+			fmt.Println("    /help            List all TUI commands")
 			fmt.Println("    Esc              Enter vim NORMAL mode")
 			fmt.Println()
 			fmt.Printf("  v%s  |  https://github.com/frankybeatz/nickai-cli\n", version)
@@ -56,6 +76,11 @@ func main() {
 		}
 	}
 
+	// Try CLI mode first — handles non-interactive commands like "nickai price BTC".
+	if cli.Run(version) {
+		return
+	}
+
 	ui.Version = version
 
 	// Prevent Bubbletea from querying terminal background color (OSC 11).
@@ -66,6 +91,15 @@ func main() {
 		ui.New(),
 		tea.WithAltScreen(),
 	)
+
+	// Force-quit safety net: second SIGINT kills immediately.
+	sigCh := make(chan os.Signal, 2)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh // First signal — let Bubbletea handle it.
+		<-sigCh // Second signal — force exit.
+		os.Exit(1)
+	}()
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error running NickAI: %v\n", err)

@@ -112,6 +112,10 @@ var (
 	UserMsgStyle   lipgloss.Style
 	BotMsgStyle    lipgloss.Style
 	CommandStyle   lipgloss.Style
+	// ActionCardStyle for guidance action cards.
+	ActionCardStyle lipgloss.Style
+	// PaneStyle for dashboard panes.
+	PaneStyle lipgloss.Style
 )
 
 func init() {
@@ -127,6 +131,14 @@ func rebuildStyles() {
 	UserMsgStyle = lipgloss.NewStyle().Foreground(ColorWhite).Bold(true)
 	BotMsgStyle = lipgloss.NewStyle().Foreground(ColorPrimary)
 	CommandStyle = lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true)
+	ActionCardStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorDim).
+		Padding(0, 1)
+	PaneStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(ColorDim).
+		Padding(0, 1)
 }
 
 // UserMsgBar renders a message with a colored left border accent (user messages).
@@ -143,6 +155,7 @@ func BotMsgBar(content string) string {
 	return lipgloss.NewStyle().
 		Border(lipgloss.ThickBorder(), false, false, false, true).
 		BorderForeground(ColorPrimary).
+		Background(ColorCardBg).
 		PaddingLeft(1).
 		Render(content)
 }

@@ -3,6 +3,7 @@ package ai
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nickai/cli/internal/api"
+	"github.com/nickai/cli/internal/logging"
 	"github.com/nickai/cli/internal/personality"
 	"github.com/nickai/cli/internal/tools"
 )
@@ -349,6 +351,7 @@ func (a *Agent) SetModel(modelID string) error {
 			a.provider = m.Provider
 			// Clear history on model switch to avoid format mismatches.
 			a.history = nil
+			logging.Info("model switched", "model", modelID, "provider", string(m.Provider))
 			return nil
 		}
 	}
@@ -361,6 +364,7 @@ func (a *Agent) SetModel(modelID string) error {
 		a.modelID = modelID
 		a.provider = ProviderOpenRouter
 		a.history = nil
+		logging.Info("model switched", "model", modelID, "provider", "openrouter")
 		return nil
 	}
 
@@ -494,19 +498,19 @@ func (a *Agent) pruneHistory() {
 
 // Chat sends a user message and runs the tool-use loop until the model
 // produces a final text response. Routes to the correct provider.
-func (a *Agent) Chat(userMessage string) (string, error) {
+func (a *Agent) Chat(ctx context.Context, userMessage string) (string, error) {
 	switch a.provider {
 	case ProviderOpenRouter:
-		return a.chatOpenRouter(userMessage)
+		return a.chatOpenRouter(ctx, userMessage)
 	case ProviderMiniMax:
-		return a.chatMiniMax(userMessage)
+		return a.chatMiniMax(ctx, userMessage)
 	default:
-		return a.chatAnthropic(userMessage)
+		return a.chatAnthropic(ctx, userMessage)
 	}
 }
 
 // chatAnthropic runs the Anthropic ReAct tool-use loop.
-func (a *Agent) chatAnthropic(userMessage string) (string, error) {
+func (a *Agent) chatAnthropic(ctx context.Context, userMessage string) (string, error) {
 	a.history = append(a.history, chatMessage{
 		Role:    "user",
 		Content: userMessage,
@@ -514,7 +518,7 @@ func (a *Agent) chatAnthropic(userMessage string) (string, error) {
 	a.pruneHistory()
 
 	for range maxToolRounds {
-		resp, err := a.callAnthropic()
+		resp, err := a.callAnthropic(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -555,7 +559,7 @@ func (a *Agent) chatAnthropic(userMessage string) (string, error) {
 }
 
 // chatMiniMax sends a simple chat completion to MiniMax (no tool use).
-func (a *Agent) chatMiniMax(userMessage string) (string, error) {
+func (a *Agent) chatMiniMax(ctx context.Context, userMessage string) (string, error) {
 	type mmMessage struct {
 		Role    string `json:"sender_type"`
 		Text    string `json:"text"`
@@ -581,7 +585,7 @@ func (a *Agent) chatMiniMax(userMessage string) (string, error) {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", minimaxURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", minimaxURL, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -626,7 +630,7 @@ func (a *Agent) chatMiniMax(userMessage string) (string, error) {
 }
 
 // chatOpenRouter sends a simple chat completion to OpenRouter (no tool use).
-func (a *Agent) chatOpenRouter(userMessage string) (string, error) {
+func (a *Agent) chatOpenRouter(ctx context.Context, userMessage string) (string, error) {
 	reqBody := orRequest{
 		Model: modelAPIName(a.modelID),
 		Messages: []orMessage{
@@ -641,7 +645,7 @@ func (a *Agent) chatOpenRouter(userMessage string) (string, error) {
 		return "", fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", openRouterURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", openRouterURL, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
@@ -678,7 +682,7 @@ func (a *Agent) chatOpenRouter(userMessage string) (string, error) {
 
 // callAnthropic sends the current conversation to the Anthropic API.
 // Retries up to maxRetries times on transient errors (connection resets, 5xx).
-func (a *Agent) callAnthropic() (*apiResponse, error) {
+func (a *Agent) callAnthropic(ctx context.Context) (*apiResponse, error) {
 	a.sanitizeHistory()
 
 	reqBody := apiRequest{
@@ -698,10 +702,11 @@ func (a *Agent) callAnthropic() (*apiResponse, error) {
 	var lastErr error
 	for attempt := range maxRetries {
 		if attempt > 0 {
+			logging.Debug("anthropic retry", "attempt", attempt+1, "model", a.modelID)
 			time.Sleep(retryDelay)
 		}
 
-		req, err := http.NewRequest("POST", anthropicURL, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", anthropicURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -711,7 +716,11 @@ func (a *Agent) callAnthropic() (*apiResponse, error) {
 
 		resp, err := a.http.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			lastErr = fmt.Errorf("API request failed: %w", err)
+			logging.Warn("anthropic request error", "error", err, "attempt", attempt+1)
 			continue
 		}
 
@@ -725,6 +734,7 @@ func (a *Agent) callAnthropic() (*apiResponse, error) {
 		// Retry on server errors (5xx).
 		if resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("Anthropic API %d: %s", resp.StatusCode, string(respBody))
+			logging.Warn("anthropic server error", "status", resp.StatusCode, "attempt", attempt+1)
 			continue
 		}
 
@@ -779,14 +789,14 @@ func extractText(blocks []contentBlock) string {
 // ChatStream sends a user message and streams text tokens through tokenCh.
 // Returns the final complete response text. Tool-use rounds are handled
 // internally. MiniMax falls back to non-streaming.
-func (a *Agent) ChatStream(userMessage string, tokenCh chan<- string) (string, error) {
+func (a *Agent) ChatStream(ctx context.Context, userMessage string, tokenCh chan<- string) (string, error) {
 	if a.provider == ProviderMiniMax || a.provider == ProviderOpenRouter {
 		var resp string
 		var err error
 		if a.provider == ProviderOpenRouter {
-			resp, err = a.chatOpenRouter(userMessage)
+			resp, err = a.chatOpenRouter(ctx, userMessage)
 		} else {
-			resp, err = a.chatMiniMax(userMessage)
+			resp, err = a.chatMiniMax(ctx, userMessage)
 		}
 		if err != nil {
 			return "", err
@@ -802,7 +812,7 @@ func (a *Agent) ChatStream(userMessage string, tokenCh chan<- string) (string, e
 	a.pruneHistory()
 
 	for range maxToolRounds {
-		resp, err := a.callAnthropicStream(tokenCh)
+		resp, err := a.callAnthropicStream(ctx, tokenCh)
 		if err != nil {
 			return "", err
 		}
@@ -862,7 +872,7 @@ func (a *Agent) sanitizeHistory() {
 // callAnthropicStream sends a streaming request to the Anthropic API with
 // retry logic matching callAnthropic. Text tokens are sent via tokenCh as
 // they arrive. Returns the accumulated response (including any tool_use blocks).
-func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error) {
+func (a *Agent) callAnthropicStream(ctx context.Context, tokenCh chan<- string) (*apiResponse, error) {
 	a.sanitizeHistory()
 
 	reqBody := streamAPIRequest{
@@ -895,7 +905,7 @@ func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error)
 			time.Sleep(retryDelay)
 		}
 
-		req, err := http.NewRequest("POST", anthropicURL, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, "POST", anthropicURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -905,6 +915,9 @@ func (a *Agent) callAnthropicStream(tokenCh chan<- string) (*apiResponse, error)
 
 		resp, err := streamClient.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			lastErr = fmt.Errorf("stream request failed: %w", err)
 			continue
 		}

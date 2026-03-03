@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nickai/cli/internal/ai"
+	"github.com/nickai/cli/internal/commands"
 )
 
 // DialogType identifies which overlay dialog is active.
@@ -224,19 +225,25 @@ func renderHelpDialog(screenW, screenH int) string {
 
 // ── Theme Picker Dialog ──
 
-func renderThemeDialog(cursor int, screenW, screenH int) string {
-	// Get sorted theme names.
+const maxVisibleDialogItems = 12
+
+func renderThemeDialog(cursor, scrollOffset int, screenW, screenH int) string {
 	names := sortedThemeNames()
 
+	endIdx := scrollOffset + maxVisibleDialogItems
+	if endIdx > len(names) {
+		endIdx = len(names)
+	}
+
 	var rows []string
-	for i, name := range names {
+	for i := scrollOffset; i < endIdx; i++ {
+		name := names[i]
 		t := Themes[name]
 		prefix := "  "
 		if i == cursor {
 			prefix = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("▸ ")
 		}
 
-		// Show theme name with its own primary color swatch.
 		swatch := lipgloss.NewStyle().Foreground(t.Primary).Render("██")
 		swatch2 := lipgloss.NewStyle().Foreground(t.Secondary).Render("██")
 		swatch3 := lipgloss.NewStyle().Foreground(t.Error).Render("██")
@@ -250,23 +257,49 @@ func renderThemeDialog(cursor int, screenW, screenH int) string {
 		rows = append(rows, row)
 	}
 
+	if len(names) > maxVisibleDialogItems {
+		remaining := len(names) - endIdx
+		above := scrollOffset
+		var scrollHint string
+		if above > 0 && remaining > 0 {
+			scrollHint = fmt.Sprintf("↑ %d above  ↓ %d below", above, remaining)
+		} else if remaining > 0 {
+			scrollHint = fmt.Sprintf("↓ %d more", remaining)
+		} else if above > 0 {
+			scrollHint = fmt.Sprintf("↑ %d above", above)
+		}
+		if scrollHint != "" {
+			rows = append(rows, DimStyle.Render("  "+scrollHint))
+		}
+	}
+
 	footer := "\n" + DimStyle.Render("↑/↓ navigate  Enter select  Esc cancel")
 
 	title := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Theme") + "\n"
 	content := title + strings.Join(rows, "\n") + footer
 
+	visibleCount := endIdx - scrollOffset
 	dialogW := min(screenW-4, 44)
-	dialogH := len(names) + 7
+	dialogH := visibleCount + 7
+	if len(names) > maxVisibleDialogItems {
+		dialogH++
+	}
 	return overlayFrame(content, dialogW, dialogH, screenW, screenH)
 }
 
 // ── Model Picker Dialog ──
 
-func renderModelDialog(cursor int, agent *ai.Agent, screenW, screenH int) string {
+func renderModelDialog(cursor, scrollOffset int, agent *ai.Agent, screenW, screenH int) string {
 	models := ai.AvailableModels
 
+	endIdx := scrollOffset + maxVisibleDialogItems
+	if endIdx > len(models) {
+		endIdx = len(models)
+	}
+
 	var rows []string
-	for i, m := range models {
+	for i := scrollOffset; i < endIdx; i++ {
+		m := models[i]
 		prefix := "  "
 		if i == cursor {
 			prefix = lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("▸ ")
@@ -277,7 +310,6 @@ func renderModelDialog(cursor int, agent *ai.Agent, screenW, screenH int) string
 			nameStyle = nameStyle.Bold(true)
 		}
 
-		// Current model indicator.
 		current := ""
 		if agent != nil && agent.ModelID() == m.ID {
 			current = lipgloss.NewStyle().Foreground(ColorPrimary).Render(" ●")
@@ -293,13 +325,33 @@ func renderModelDialog(cursor int, agent *ai.Agent, screenW, screenH int) string
 		rows = append(rows, row)
 	}
 
+	if len(models) > maxVisibleDialogItems {
+		remaining := len(models) - endIdx
+		above := scrollOffset
+		var scrollHint string
+		if above > 0 && remaining > 0 {
+			scrollHint = fmt.Sprintf("↑ %d above  ↓ %d below", above, remaining)
+		} else if remaining > 0 {
+			scrollHint = fmt.Sprintf("↓ %d more", remaining)
+		} else if above > 0 {
+			scrollHint = fmt.Sprintf("↑ %d above", above)
+		}
+		if scrollHint != "" {
+			rows = append(rows, DimStyle.Render("  "+scrollHint))
+		}
+	}
+
 	footer := "\n" + DimStyle.Render("↑/↓ navigate  Enter select  Esc cancel")
 
 	title := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render("Model") + "\n"
 	content := title + strings.Join(rows, "\n") + footer
 
+	visibleCount := endIdx - scrollOffset
 	dialogW := min(screenW-4, 58)
-	dialogH := len(models) + 7
+	dialogH := visibleCount + 7
+	if len(models) > maxVisibleDialogItems {
+		dialogH++
+	}
 	return overlayFrame(content, dialogW, dialogH, screenW, screenH)
 }
 
@@ -382,87 +434,8 @@ func renderPaletteDialog(cursor, scrollOffset int, filter string, filtered []str
 }
 
 // paletteCommands is the full list for the command palette: "cmd|description".
-var paletteCommands = []string{
-	"/help|Show all commands",
-	"/status|Portfolio & positions",
-	"/orders|Recent orders",
-	"/price|Live price quotes",
-	"/watch|Live price dashboard",
-	"/snapshot|Combined dashboard",
-	"/market|Full market overview",
-	"/pnl|Profit & loss summary",
-	"/history|Trade journal",
-	"/buy|Market buy order",
-	"/sell|Limit/market sell",
-	"/agents|List trading agents",
-	"/templates|Browse marketplace",
-	"/workflow|Manage workflows",
-	"/credential|Manage API keys",
-	"/logs|Workflow logs",
-	"/chart|ASCII sparkline chart",
-	"/alert|Set price alerts",
-	"/model|Switch AI model",
-	"/theme|Switch color theme",
-	"/mcp list|Connected MCP servers & tools",
-	"/mcp search|Browse MCP server directory",
-	"/mcp add|Install an MCP server",
-	"/mcp info|Details on an MCP server",
-	"/mcp remove|Disconnect an MCP server",
-	"/mcp quick|Install all free MCP servers",
-	"/trigger list|View active triggers",
-	"/trigger add|Create conditional trade trigger",
-	"/trigger clear|Remove all triggers",
-	"/risk show|View risk guardrails",
-	"/risk set|Set risk limits",
-	"/risk clear|Remove all risk limits",
-	"/strategy list|View TWAP strategies",
-	"/strategy twap|Create TWAP strategy",
-	"/strategy cancel|Cancel a strategy",
-	"/notify show|Notification settings",
-	"/notify set|Configure notifications",
-	"/notify test|Send test notification",
-	"/analytics|Portfolio analytics dashboard",
-	"/analyze|Technical analysis for a symbol",
-	"/analyze presets|Browse analysis presets",
-	"/analyze run|Run an analysis preset",
-	"/backtest|Backtest a trading strategy",
-	"/backtest presets|Browse preset strategies",
-	"/backtest run|Run a preset backtest",
-	"/polymarket|Prediction market analysis",
-	"/polymarket scan|Scan top events",
-	"/polymarket analyze|Deep dive on an event",
-	"/guide|Interactive walkthrough",
-	"/guide trading|Trading basics",
-	"/guide backtest|Backtesting guide",
-	"/guide mcp|MCP integrations guide",
-	"/memory|View saved AI memories",
-	"/memory clear|Clear all memories",
-	"/consensus|Multi-LLM trading consensus",
-	"/consensus models|Available consensus models",
-	"/auto list|View automation rules",
-	"/auto pause|Pause an automation rule",
-	"/auto remove|Remove an automation rule",
-	// Multi-vertical commands.
-	"/connect|Connect an exchange",
-	"/connect list|Show connected exchanges",
-	"/balances|Unified balance view",
-	"/positions|Open positions across exchanges",
-	"/markets|Trending prediction markets",
-	"/bet|Place a prediction market bet",
-	"/wallet balance|Check wallet balances",
-	"/swap|Token swap (DEX)",
-	"/gas|Gas price estimates",
-	"/stock|Stock analysis",
-	"/screen|Stock screener",
-	"/odds|Betting odds lookup",
-	"/lines|Line movement tracker",
-	"/funding|Perpetual funding rates",
-	"/config|Manage settings",
-	"/config init|Create account & API key",
-	"/man|Manual pages",
-	"/clear|Clear chat",
-	"/quit|Exit NickAI",
-}
+// paletteCommands is generated from the unified command registry.
+var paletteCommands = commands.PaletteEntries()
 
 // filterSuggestions returns palette commands matching a prefix (for the / menu).
 func filterSuggestions(prefix string) []string {
