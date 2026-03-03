@@ -12,6 +12,8 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/nickai/cli/internal/logging"
 	"github.com/nickai/cli/internal/risk"
+	"github.com/nickai/cli/internal/sanitize"
+	"github.com/nickai/cli/internal/telemetry"
 	"github.com/nickai/cli/internal/tools"
 )
 
@@ -52,6 +54,7 @@ func (cm *ClientManager) ConnectAll(cfg *MCPConfig) {
 		conn, err := cm.connect(name, serverCfg)
 		if err != nil {
 			logging.Warn("mcp server failed", "name", name, "error", err)
+			telemetry.RecordError("mcp", "connect_"+name, err)
 			cm.failed = append(cm.failed, FailedConnection{Name: name, Error: err.Error()})
 			continue
 		}
@@ -67,11 +70,20 @@ func (cm *ClientManager) ConnectAll(cfg *MCPConfig) {
 func (cm *ClientManager) connect(name string, cfg MCPServerConfig) (*MCPConnection, error) {
 	logging.Debug("mcp connecting", "name", name, "command", cfg.Command, "args", cfg.Args)
 
-	// Build env slice from map, inheriting current env.
-	env := os.Environ()
-	for k, v := range cfg.Env {
-		env = append(env, k+"="+v)
+	// Sandbox: validate command is in the allowlist.
+	if err := ValidateCommand(cfg.Command); err != nil {
+		return nil, fmt.Errorf("sandbox blocked %s: %w", name, err)
 	}
+
+	// Build a sanitized environment for the MCP subprocess.
+	// Keep only safe defaults + explicitly configured MCP vars.
+	envEntries := os.Environ()
+	allowedEnv := make(map[string]bool, len(cfg.Env))
+	for k, v := range cfg.Env {
+		allowedEnv[k] = true
+		envEntries = append(envEntries, k+"="+v)
+	}
+	env := SanitizeEnv(envEntries, allowedEnv)
 
 	client, err := mcpclient.NewStdioMCPClient(cfg.Command, env, cfg.Args...)
 	if err != nil {
@@ -224,13 +236,18 @@ func makeProxyExecutor(client *mcpclient.Client, toolName string) tools.ToolFunc
 		result, err := client.CallTool(ctx, callReq)
 		if err != nil {
 			logging.Warn("mcp tool call failed", "tool", toolName, "error", err)
+			telemetry.RecordError("mcp", "tool_call", err)
 			return "", err
 		}
 
+		raw := getTextFromResult(result)
+		// Sanitize MCP result: strip control chars, enforce 50KB max.
+		raw = sanitize.SanitizeMCPResult(raw, 50000)
+
 		if result.IsError {
-			return tools.ErrorJSON(getTextFromResult(result)), nil
+			return tools.ErrorJSON(raw), nil
 		}
-		return getTextFromResult(result), nil
+		return raw, nil
 	}
 }
 

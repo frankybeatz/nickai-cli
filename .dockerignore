@@ -1,0 +1,13 @@
+.git
+.github
+.claude
+.goreleaser.yml
+docs
+build
+*.md
+!go.mod
+!go.sum
+demo.tape
+screenshot.png
+nickai
+nickai-node

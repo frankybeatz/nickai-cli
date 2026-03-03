@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nickai/cli/internal/config"
+	"github.com/nickai/cli/internal/telemetry"
 )
 
 // --- Response types ---
@@ -184,6 +185,7 @@ func (c *PapernickClient) doRaw(req *http.Request) ([]byte, error) {
 	if resp.StatusCode >= 400 {
 		apiErr := &APIError{StatusCode: resp.StatusCode, Body: string(respBody)}
 		_ = json.Unmarshal(respBody, apiErr)
+		telemetry.RecordError("api", "http_"+req.Method, apiErr)
 		return nil, apiErr
 	}
 

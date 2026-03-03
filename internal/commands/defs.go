@@ -49,6 +49,7 @@ var Registry = []CommandDef{
 	{Type: TypeBacktest, Primary: "/backtest", Aliases: []string{"/bt"}, Description: "Backtest a trading strategy", Category: "Analysis", SubCommands: []SubCommandDef{
 		{Name: "presets", Description: "Browse preset strategies"},
 		{Name: "run", Description: "Run a preset backtest"},
+		{Name: "analyze", Description: "AI analysis of last backtest"},
 	}},
 	{Type: TypeConsensus, Primary: "/consensus", Aliases: []string{"/con"}, Description: "Multi-LLM trading consensus", Category: "Analysis", SubCommands: []SubCommandDef{
 		{Name: "models", Description: "Available consensus models"},
@@ -151,6 +152,14 @@ var Registry = []CommandDef{
 		{Name: "install", Description: "Install an MCP server plugin"},
 		{Name: "remove", Description: "Remove an installed plugin"},
 		{Name: "search", Description: "Search available plugins"},
+	}},
+	{Type: TypeNode, Primary: "/node", Description: "Connect to a Nick Node for always-on execution", Category: "Setup", SubCommands: []SubCommandDef{
+		{Name: "connect", Description: "Connect to a running node"},
+		{Name: "status", Description: "Show node status"},
+		{Name: "deploy", Description: "Deploy a strategy to the node"},
+		{Name: "strategies", Description: "List running strategies on node"},
+		{Name: "stop", Description: "Stop a strategy on the node"},
+		{Name: "disconnect", Description: "Disconnect from node"},
 	}},
 }
 

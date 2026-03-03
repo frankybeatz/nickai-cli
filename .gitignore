@@ -1,4 +1,7 @@
 nickai
+nickai-node
 /cli
 build/
 *.exe
+*.docx
+.claude/

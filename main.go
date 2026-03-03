@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +12,7 @@ import (
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/logging"
 	"github.com/nickai/cli/internal/mcp"
+	"github.com/nickai/cli/internal/telemetry"
 	"github.com/nickai/cli/internal/ui"
 )
 
@@ -27,6 +29,10 @@ func main() {
 		}
 	}
 	logging.Init(debug)
+	if home, err := os.UserHomeDir(); err == nil {
+		telemetry.Init(filepath.Join(home, ".nickai"))
+	}
+	defer telemetry.Flush()
 	if debug {
 		logging.Info("nickai starting", "version", version, "args", os.Args)
 	}

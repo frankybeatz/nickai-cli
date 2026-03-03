@@ -24,6 +24,7 @@ import (
 	"github.com/nickai/cli/internal/market"
 	"github.com/nickai/cli/internal/mcp"
 	"github.com/nickai/cli/internal/memory"
+	"github.com/nickai/cli/internal/node"
 	"github.com/nickai/cli/internal/notify"
 	"github.com/nickai/cli/internal/risk"
 	"github.com/nickai/cli/internal/strategy"
@@ -336,8 +337,11 @@ type Model struct {
 	cachedHasAnalyzed   bool
 	cachedHasBacktested bool
 
-	// Last backtest result (for /export backtest).
+	// Last backtest result (for /export backtest and /backtest analyze).
 	lastBacktestResult *backtest.Result
+
+	// Node client (for /node commands).
+	nodeClient *node.Client
 
 	// Cached welcome screen content (avoids re-rendering + random flicker on every frame).
 	cachedWelcome      string
@@ -794,6 +798,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.lastBacktestResult = msg.result
 			content = RenderBacktestCard(msg.result)
+		}
+		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+			m.messages[len(m.messages)-1].content = content
+		}
+		m.updateViewport()
+		return m, nil
+
+	case nodeConnectResultMsg:
+		m.loading = false
+		var content string
+		if msg.err != nil {
+			content = BotMsgStyle.Render("nick: ") + ErrorStyle.Render("Node connection failed: "+msg.err.Error())
+		} else {
+			m.nodeClient = msg.client
+			content = BotMsgStyle.Render("nick: ") + BrandStyle.Render("Connected to Nick Node!") +
+				fmt.Sprintf(" v%s, uptime %s", msg.version, formatDuration(time.Duration(msg.uptime)*time.Second))
 		}
 		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
 			m.messages[len(m.messages)-1].content = content

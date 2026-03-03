@@ -6,7 +6,8 @@ before:
     - go vet ./...
 
 builds:
-  - main: .
+  - id: nickai
+    main: .
     binary: nickai
     ldflags:
       - -s -w -X main.version={{.Version}}
@@ -20,6 +21,18 @@ builds:
     ignore:
       - goos: windows
         goarch: arm64
+
+  - id: nickai-node
+    main: ./cmd/node/
+    binary: nickai-node
+    ldflags:
+      - -s -w -X node.Version={{.Version}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
 
 archives:
   - format: tar.gz
