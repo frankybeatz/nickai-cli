@@ -134,3 +134,37 @@ func TestNextStepAfterCommand(t *testing.T) {
 		t.Errorf("expected anthropic_key hint for config without AI key, got %v", hints)
 	}
 }
+
+func TestStageOrdinalAndLabel(t *testing.T) {
+	if got := StageOrdinal(StageFresh); got != 1 {
+		t.Fatalf("StageOrdinal(fresh) = %d, want 1", got)
+	}
+	if got := StageOrdinal(StageAdvanced); got != 7 {
+		t.Fatalf("StageOrdinal(advanced) = %d, want 7", got)
+	}
+	if got := StageLabel(StageAIReady); got == "" {
+		t.Fatal("StageLabel(ai_ready) should not be empty")
+	}
+}
+
+func TestOnboardingChecklistAndProgress(t *testing.T) {
+	ctx := StageContext{
+		HasAPIKey:     true,
+		HasAIKey:      true,
+		MCPCount:      1,
+		TradeCount:    2,
+		HasAnalyzed:   true,
+		HasBacktested: false,
+	}
+	items := OnboardingChecklist(ctx)
+	if len(items) != 6 {
+		t.Fatalf("expected 6 checklist items, got %d", len(items))
+	}
+	done, total := JourneyProgress(ctx)
+	if total != 6 {
+		t.Fatalf("expected total=6, got %d", total)
+	}
+	if done != 5 {
+		t.Fatalf("expected done=5, got %d", done)
+	}
+}

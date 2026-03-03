@@ -268,7 +268,7 @@ func (m *Model) welcomeContent() string {
 	ctx := m.buildGuidanceCtx()
 	stage := guidance.DetectStage(ctx)
 	actions := guidance.ActionsForStage(stage, ctx)
-	m.cachedWelcome = RenderWelcome(m.width, stage, actions, m.cfg.Vibe, memCount, mcpCount)
+	m.cachedWelcome = RenderWelcome(m.width, stage, actions, m.cfg.Vibe, ctx, memCount, mcpCount)
 	m.welcomeDirty = false
 	return m.cachedWelcome
 }

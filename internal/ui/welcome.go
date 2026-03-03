@@ -38,7 +38,7 @@ var startupTaglines = []string{
 
 // RenderWelcome returns the NickAI branded welcome screen.
 // Now uses the guidance system for dynamic action cards.
-func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCard, vibeID string, memCount ...int) string {
+func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCard, vibeID string, ctx guidance.StageContext, memCount ...int) string {
 	memoryCount := 0
 	mcpCount := 0
 	if len(memCount) > 0 {
@@ -93,6 +93,16 @@ func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCar
 	inner = append(inner, divider)
 	inner = append(inner, "")
 
+	stageOrdinal := guidance.StageOrdinal(stage)
+	stageLabel := guidance.StageLabel(stage)
+	journey := lipgloss.NewStyle().
+		Foreground(ColorSecondary).
+		Bold(true).
+		Render(fmt.Sprintf("  Journey %d/7 · %s", stageOrdinal, stageLabel))
+	inner = append(inner, journey)
+	inner = append(inner, "  "+renderProgressBar(stageOrdinal, 7, 26))
+	inner = append(inner, "")
+
 	// Dynamic content based on stage.
 	if stage == guidance.StageFresh {
 		greeting := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render("gm. Let's get you set up.")
@@ -105,6 +115,10 @@ func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCar
 		inner = append(inner, greeting)
 		inner = append(inner, "")
 	}
+
+	done, total := guidance.JourneyProgress(ctx)
+	checklist := guidance.OnboardingChecklist(ctx)
+	inner = append(inner, renderMissionBlock(stage, checklist, done, total)...)
 
 	// Action cards.
 	if len(actions) > 0 {
@@ -161,4 +175,61 @@ func RenderWelcome(width int, stage guidance.Stage, actions []guidance.ActionCar
 		Render(box)
 
 	return "\n" + centered + "\n"
+}
+
+func renderProgressBar(current int, total int, width int) string {
+	if total <= 0 {
+		total = 1
+	}
+	if width < total {
+		width = total
+	}
+	filled := current * width / total
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > width {
+		filled = width
+	}
+	return "[" + strings.Repeat("=", filled) + strings.Repeat("-", width-filled) + "]"
+}
+
+func renderMissionBlock(stage guidance.Stage, checklist []guidance.ChecklistItem, done int, total int) []string {
+	var lines []string
+	if total > 0 {
+		lines = append(lines, DimStyle.Render(fmt.Sprintf("  Mission progress: %d/%d complete", done, total)))
+		lines = append(lines, "")
+	}
+
+	var pending []guidance.ChecklistItem
+	for _, item := range checklist {
+		if !item.Done {
+			pending = append(pending, item)
+		}
+	}
+	if len(pending) == 0 {
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render("  You're fully equipped."))
+		lines = append(lines, CommandStyle.Render("  Try: scan market opportunities and propose 2 setups with risk limits"))
+		lines = append(lines, "")
+		return lines
+	}
+
+	stepsToShow := min(3, len(pending))
+	title := "  5-minute mission:"
+	if stage == guidance.StageAdvanced {
+		title = "  Next mission:"
+	}
+	lines = append(lines, lipgloss.NewStyle().Foreground(ColorSecondary).Bold(true).Render(title))
+	for i := range stepsToShow {
+		step := pending[i]
+		lines = append(lines, lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(fmt.Sprintf("  %d) %s", i+1, step.Label)))
+		lines = append(lines, CommandStyle.Render("     "+step.Command))
+	}
+	lines = append(lines, "")
+
+	lines = append(lines, DimStyle.Render("  Talk naturally with Nick:"))
+	lines = append(lines, CommandStyle.Render("  \"Nick, scan BTC/ETH/SOL and give me one setup with clear risk.\""))
+	lines = append(lines, CommandStyle.Render("  \"Guide me step by step like I'm new and keep me disciplined.\""))
+	lines = append(lines, "")
+	return lines
 }
