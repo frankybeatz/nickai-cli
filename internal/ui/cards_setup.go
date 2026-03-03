@@ -457,6 +457,8 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/history", "Trade journal with all orders"))
 	lines = append(lines, cmdLine("/chart BTC", "ASCII sparkline chart"))
 	lines = append(lines, cmdLine("/analytics", "Portfolio analytics & stats"))
+	lines = append(lines, cmdLine("/export trades", "Export trades to CSV"))
+	lines = append(lines, cmdLine("/export portfolio", "Export portfolio to CSV"))
 
 	lines = append(lines, sectionHeader("Analysis & AI"))
 	lines = append(lines, cmdLine("/analyze BTC", "Technical analysis"))
@@ -471,7 +473,7 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/consensus models", "Show model tiers & costs"))
 	lines = append(lines, cmdLine("/backtest presets", "List backtest strategies"))
 	lines = append(lines, cmdLine("/backtest run rsi-reversal BTC", "Run a backtest preset"))
-	lines = append(lines, cmdLine("/backtest activate <preset> <sym>", "Activate as live rule"))
+	lines = append(lines, cmdLine("/backtest analyze", "AI strategy critique"))
 	lines = append(lines, cmdLine("/polymarket scan", "Prediction market analysis"))
 
 	lines = append(lines, sectionHeader("Strategy & Automation"))
@@ -531,10 +533,20 @@ func RenderHelp() string {
 	lines = append(lines, cmdLine("/memory clear", "Clear all memories"))
 	lines = append(lines, cmdLine("/memory remove <id>", "Remove a specific memory"))
 
+	lines = append(lines, sectionHeader("Nick Node"))
+	lines = append(lines, cmdLine("/node connect localhost:9400", "Connect to a running node"))
+	lines = append(lines, cmdLine("/node status", "Node health & active jobs"))
+	lines = append(lines, cmdLine("/node deploy twap BTC 1000 24h", "Deploy a strategy to node"))
+	lines = append(lines, cmdLine("/node strategies", "List deployed strategies"))
+	lines = append(lines, cmdLine("/node stop <id>", "Stop a running strategy"))
+	lines = append(lines, cmdLine("/node disconnect", "Disconnect from node"))
+
 	lines = append(lines, sectionHeader("Setup & Integrations"))
 	lines = append(lines, cmdLine("/config init", "Create account & API key"))
 	lines = append(lines, cmdLine("/config", "Manage settings & keys"))
 	lines = append(lines, cmdLine("/mcp", "MCP server integrations"))
+	lines = append(lines, cmdLine("/plugin search <query>", "Browse MCP plugins"))
+	lines = append(lines, cmdLine("/plugin install <name>", "Install a plugin"))
 	lines = append(lines, cmdLine("/credential", "Exchange API keys"))
 	lines = append(lines, cmdLine("/model <id>", "Switch AI model (9 models)"))
 	lines = append(lines, cmdLine("/model <slug>", "Custom OpenRouter model"))
