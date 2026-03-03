@@ -313,21 +313,50 @@ func RenderWatch(client *api.PapernickClient, symbols []string, width int) strin
 
 // --- /config ---
 
+func storageLabel(storage string) string {
+	switch storage {
+	case "keyring":
+		return DimStyle.Render(" (keyring)")
+	case "env":
+		return DimStyle.Render(" (from env)")
+	case "config":
+		return DimStyle.Render(" (config file)")
+	default:
+		return ""
+	}
+}
+
 func RenderConfigShow(cfg *config.Config) string {
 	header := SectionHeader("Configuration")
 
+	apiStorage := cfg.KeyStorage("api_key")
+	anthropicStorage := cfg.KeyStorage("anthropic_key")
+
 	anthropicStatus := cfg.MaskedAnthropicKey()
-	if cfg.AnthropicKey == "" {
-		if envKey := cfg.AnthropicKeyOrEnv(); envKey != "" {
-			anthropicStatus = maskKeyShort(envKey) + DimStyle.Render(" (from env)")
-		}
+	if anthropicStorage == "(not set)" {
+		anthropicStatus = "(not set)"
+	} else {
+		anthropicStatus += storageLabel(anthropicStorage)
+	}
+
+	apiStatus := cfg.MaskedKey()
+	if apiStorage != "(not set)" {
+		apiStatus += storageLabel(apiStorage)
+	}
+
+	keyringLine := "  " + DimStyle.Render("Keyring:        ")
+	if config.UseKeyring() {
+		keyringLine += "available (secrets stored securely)"
+	} else {
+		keyringLine += "unavailable (using config file)"
 	}
 
 	lines := []string{
 		header,
-		"  " + DimStyle.Render("API Key:        ") + cfg.MaskedKey(),
+		"  " + DimStyle.Render("API Key:        ") + apiStatus,
 		"  " + DimStyle.Render("Anthropic Key:  ") + anthropicStatus,
 		"  " + DimStyle.Render("Base URL:       ") + cfg.BaseURL,
+		keyringLine,
 	}
 	return strings.Join(lines, "\n")
 }
@@ -343,8 +372,18 @@ func maskKeyShort(k string) string {
 }
 
 func RenderConfigSet(key, value string) string {
-	return BotMsgStyle.Render("nick: ") + "Set " +
+	msg := BotMsgStyle.Render("nick: ") + "Set " +
 		CommandStyle.Render(key) + " successfully."
+	// Indicate storage location for secret keys.
+	switch key {
+	case "api_key", "anthropic_key", "minimax_key", "openrouter_key":
+		if config.UseKeyring() {
+			msg += DimStyle.Render(" (stored in OS keyring)")
+		} else {
+			msg += DimStyle.Render(" (stored in config file)")
+		}
+	}
+	return msg
 }
 
 func RenderConfigTest(client *api.PapernickClient) string {

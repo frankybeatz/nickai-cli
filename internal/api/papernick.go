@@ -103,7 +103,7 @@ type PapernickClient struct {
 func NewClient(cfg *config.Config) *PapernickClient {
 	return &PapernickClient{
 		baseURL: cfg.BaseURL,
-		apiKey:  cfg.APIKey,
+		apiKey:  cfg.APIKeyResolved(),
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -113,7 +113,7 @@ func NewClient(cfg *config.Config) *PapernickClient {
 // UpdateConfig refreshes the client's credentials from a new config.
 func (c *PapernickClient) UpdateConfig(cfg *config.Config) {
 	c.baseURL = cfg.BaseURL
-	c.apiKey = cfg.APIKey
+	c.apiKey = cfg.APIKeyResolved()
 }
 
 // IsConfigured returns true if an API key is set.
