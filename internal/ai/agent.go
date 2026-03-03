@@ -18,6 +18,8 @@ import (
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/logging"
 	"github.com/nickai/cli/internal/personality"
+	"github.com/nickai/cli/internal/sanitize"
+	"github.com/nickai/cli/internal/telemetry"
 	"github.com/nickai/cli/internal/tools"
 )
 
@@ -444,10 +446,10 @@ func (a *Agent) effectivePrompt() string {
 		p += "\n\n" + a.riskPromptSuffix
 	}
 	if a.autoPromptSuffix != "" {
-		p += "\n\n" + a.autoPromptSuffix
+		p += "\n\n" + sanitize.SanitizeForPrompt(a.autoPromptSuffix)
 	}
 	if a.memoryPromptSuffix != "" {
-		p += "\n\n" + a.memoryPromptSuffix
+		p += "\n\n" + sanitize.SanitizeForPrompt(a.memoryPromptSuffix)
 	}
 	if a.portfolioSuffix != "" {
 		p += "\n\n" + a.portfolioSuffix
@@ -530,6 +532,7 @@ func (a *Agent) chatAnthropic(ctx context.Context, userMessage string) (string, 
 	for range maxToolRounds {
 		resp, err := a.callAnthropic(ctx)
 		if err != nil {
+			telemetry.RecordError("ai", "api_call", err)
 			return "", err
 		}
 
