@@ -422,8 +422,13 @@ func RenderBacktestPresets() string {
 
 	for _, p := range presets {
 		name := lipgloss.NewStyle().Foreground(ColorPrimary).Bold(true).Render(padRight(p.Strategy.Name, 20))
-		desc := DimStyle.Render(p.Description)
-		lines = append(lines, "  "+name+desc)
+
+		// Truncate description to fit typical terminal width.
+		desc := p.Description
+		if len(desc) > 45 {
+			desc = desc[:42] + "..."
+		}
+		lines = append(lines, "  "+name+DimStyle.Render(desc))
 
 		// Details.
 		details := "    "
