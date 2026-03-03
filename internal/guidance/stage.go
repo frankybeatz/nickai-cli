@@ -23,6 +23,21 @@ type ActionCard struct {
 	Command string
 }
 
+// ChecklistItem is a guided onboarding task shown in the welcome experience.
+type ChecklistItem struct {
+	Label   string
+	Command string
+	Done    bool
+}
+
+// Challenge is a focused mission objective for the current stage.
+type Challenge struct {
+	Title   string
+	Goal    string
+	Command string
+	Reward  string
+}
+
 // StageContext holds the state needed to determine the user's journey stage.
 type StageContext struct {
 	HasAPIKey      bool
@@ -249,4 +264,206 @@ func NextStepAfterCommand(cmd string, ctx StageContext) []string {
 	default:
 		return nil
 	}
+}
+
+// StageOrdinal returns the 1-based journey position for a stage.
+func StageOrdinal(stage Stage) int {
+	switch stage {
+	case StageFresh:
+		return 1
+	case StageConfigured:
+		return 2
+	case StageAIReady:
+		return 3
+	case StageEquipped:
+		return 4
+	case StageTrading:
+		return 5
+	case StageAnalyzing:
+		return 6
+	case StageAdvanced:
+		return 7
+	default:
+		return 1
+	}
+}
+
+// StageLabel returns a human-readable stage name.
+func StageLabel(stage Stage) string {
+	switch stage {
+	case StageFresh:
+		return "Fresh Setup"
+	case StageConfigured:
+		return "Configured"
+	case StageAIReady:
+		return "AI Ready"
+	case StageEquipped:
+		return "Tool Equipped"
+	case StageTrading:
+		return "Trading"
+	case StageAnalyzing:
+		return "Analyzing"
+	case StageAdvanced:
+		return "Advanced"
+	default:
+		return "Fresh Setup"
+	}
+}
+
+// OnboardingChecklist returns the core guided journey tasks with completion state.
+func OnboardingChecklist(ctx StageContext) []ChecklistItem {
+	return []ChecklistItem{
+		{
+			Label:   "Connect your PaperNick account",
+			Command: "/config init",
+			Done:    ctx.HasAPIKey,
+		},
+		{
+			Label:   "Unlock AI assistant",
+			Command: "/config set anthropic_key <key>",
+			Done:    ctx.HasAIKey,
+		},
+		{
+			Label:   "Install live MCP data tools",
+			Command: "/mcp quick",
+			Done:    ctx.MCPCount > 0,
+		},
+		{
+			Label:   "Place first paper trade",
+			Command: "/buy BTC 0.01",
+			Done:    ctx.TradeCount > 0,
+		},
+		{
+			Label:   "Run technical analysis",
+			Command: "/analyze BTC",
+			Done:    ctx.HasAnalyzed,
+		},
+		{
+			Label:   "Backtest one strategy",
+			Command: "/backtest run rsi-reversal BTC",
+			Done:    ctx.HasBacktested,
+		},
+	}
+}
+
+// JourneyProgress returns completed and total onboarding tasks.
+func JourneyProgress(ctx StageContext) (done int, total int) {
+	items := OnboardingChecklist(ctx)
+	for _, item := range items {
+		if item.Done {
+			done++
+		}
+	}
+	return done, len(items)
+}
+
+// Experience returns gamified progress values derived from current context.
+func Experience(ctx StageContext) (xp int, level int, rank string) {
+	if ctx.HasAPIKey {
+		xp += 120
+	}
+	if ctx.HasAIKey {
+		xp += 120
+	}
+	if ctx.MCPCount > 0 {
+		xp += minInt(ctx.MCPCount, 4) * 60
+	}
+	if ctx.TradeCount > 0 {
+		xp += minInt(ctx.TradeCount, 10) * 30
+	}
+	if ctx.HasAnalyzed {
+		xp += 100
+	}
+	if ctx.HasBacktested {
+		xp += 120
+	}
+	if ctx.MemoryCount > 0 {
+		xp += minInt(ctx.MemoryCount, 20) * 5
+	}
+
+	level = 1 + xp/180
+	if level > 10 {
+		level = 10
+	}
+
+	ranks := []string{
+		"Rookie", "Scout", "Navigator", "Strategist", "Operator",
+		"Commander", "Architect", "Tactician", "Oracle", "Legend",
+	}
+	idx := level - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(ranks) {
+		idx = len(ranks) - 1
+	}
+	return xp, level, ranks[idx]
+}
+
+// StageChallenge returns a single mission objective for the current stage.
+func StageChallenge(stage Stage, ctx StageContext) Challenge {
+	switch stage {
+	case StageFresh:
+		return Challenge{
+			Title:   "Boot Sequence",
+			Goal:    "Initialize your paper account and enter the terminal arena.",
+			Command: "/config init",
+			Reward:  "+120 XP",
+		}
+	case StageConfigured:
+		return Challenge{
+			Title:   "Summon Nick",
+			Goal:    "Unlock AI and request your first market briefing.",
+			Command: "/config set anthropic_key <key>",
+			Reward:  "+120 XP",
+		}
+	case StageAIReady:
+		return Challenge{
+			Title:   "Toolchain Upgrade",
+			Goal:    "Install free MCP tools to unlock live market intel.",
+			Command: "/mcp quick",
+			Reward:  "+180 XP",
+		}
+	case StageEquipped:
+		return Challenge{
+			Title:   "First Blood",
+			Goal:    "Open your first disciplined paper position.",
+			Command: "/buy BTC 0.01",
+			Reward:  "+150 XP",
+		}
+	case StageTrading:
+		return Challenge{
+			Title:   "Read the Tape",
+			Goal:    "Validate one position with technical analysis.",
+			Command: "/analyze BTC",
+			Reward:  "+100 XP",
+		}
+	case StageAnalyzing:
+		return Challenge{
+			Title:   "Prove the Edge",
+			Goal:    "Backtest a strategy before deploying capital logic.",
+			Command: "/backtest run rsi-reversal BTC",
+			Reward:  "+120 XP",
+		}
+	default:
+		cmd := "/polymarket scan"
+		goal := "Find one asymmetric setup and define risk before acting."
+		if len(ctx.TopPositions) > 0 {
+			cmd = "/analyze " + ctx.TopPositions[0]
+			goal = "Deep-dive your top position and refine exits with data."
+		}
+		return Challenge{
+			Title:   "Boss Fight",
+			Goal:    goal,
+			Command: cmd,
+			Reward:  "+80 XP",
+		}
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

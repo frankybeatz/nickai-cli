@@ -134,3 +134,71 @@ func TestNextStepAfterCommand(t *testing.T) {
 		t.Errorf("expected anthropic_key hint for config without AI key, got %v", hints)
 	}
 }
+
+func TestStageOrdinalAndLabel(t *testing.T) {
+	if got := StageOrdinal(StageFresh); got != 1 {
+		t.Fatalf("StageOrdinal(fresh) = %d, want 1", got)
+	}
+	if got := StageOrdinal(StageAdvanced); got != 7 {
+		t.Fatalf("StageOrdinal(advanced) = %d, want 7", got)
+	}
+	if got := StageLabel(StageAIReady); got == "" {
+		t.Fatal("StageLabel(ai_ready) should not be empty")
+	}
+}
+
+func TestOnboardingChecklistAndProgress(t *testing.T) {
+	ctx := StageContext{
+		HasAPIKey:     true,
+		HasAIKey:      true,
+		MCPCount:      1,
+		TradeCount:    2,
+		HasAnalyzed:   true,
+		HasBacktested: false,
+	}
+	items := OnboardingChecklist(ctx)
+	if len(items) != 6 {
+		t.Fatalf("expected 6 checklist items, got %d", len(items))
+	}
+	done, total := JourneyProgress(ctx)
+	if total != 6 {
+		t.Fatalf("expected total=6, got %d", total)
+	}
+	if done != 5 {
+		t.Fatalf("expected done=5, got %d", done)
+	}
+}
+
+func TestExperienceProgression(t *testing.T) {
+	early := StageContext{HasAPIKey: true}
+	full := StageContext{
+		HasAPIKey: true, HasAIKey: true, MCPCount: 3, TradeCount: 8,
+		HasAnalyzed: true, HasBacktested: true, MemoryCount: 10,
+	}
+
+	xpEarly, levelEarly, _ := Experience(early)
+	xpFull, levelFull, rankFull := Experience(full)
+
+	if xpFull <= xpEarly {
+		t.Fatalf("expected xp to increase with richer context: early=%d full=%d", xpEarly, xpFull)
+	}
+	if levelFull <= levelEarly {
+		t.Fatalf("expected level to increase: early=%d full=%d", levelEarly, levelFull)
+	}
+	if rankFull == "" {
+		t.Fatal("expected non-empty rank")
+	}
+}
+
+func TestStageChallengeNotEmpty(t *testing.T) {
+	stages := []Stage{
+		StageFresh, StageConfigured, StageAIReady, StageEquipped,
+		StageTrading, StageAnalyzing, StageAdvanced,
+	}
+	for _, s := range stages {
+		ch := StageChallenge(s, StageContext{TopPositions: []string{"BTC"}})
+		if ch.Title == "" || ch.Goal == "" || ch.Command == "" || ch.Reward == "" {
+			t.Fatalf("stage %s returned incomplete challenge: %+v", s, ch)
+		}
+	}
+}
