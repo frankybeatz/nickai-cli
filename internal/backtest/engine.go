@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nickai/cli/internal/indicators"
+	"github.com/nickai/cli/internal/logging"
 	"github.com/nickai/cli/internal/market"
 )
 
@@ -333,6 +334,7 @@ func evalCondition(cond Condition, snapshots []indicatorSnapshot, i int) bool {
 		}
 		return prev >= prevTarget && current < target
 	default:
+		logging.Debug("backtest unknown operator", "operator", cond.Operator, "indicator", cond.Indicator)
 		return false
 	}
 }
@@ -365,6 +367,7 @@ func getIndicatorValue(indicator string, snap indicatorSnapshot) float64 {
 	case "fear_greed":
 		return snap.FearGreed
 	default:
+		logging.Debug("backtest unknown indicator", "indicator", indicator)
 		return 0
 	}
 }

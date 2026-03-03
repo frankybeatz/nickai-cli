@@ -49,6 +49,7 @@ func NewOpenRouterClient(apiKey string) *OpenRouterClient {
 
 // ChatCompletion sends a chat completion request to the specified model via
 // OpenRouter. It returns the assistant's response text or an error.
+// For context-aware calls (e.g. with timeout), use ChatCompletionContext.
 func (c *OpenRouterClient) ChatCompletion(model, systemPrompt, userPrompt string) (string, error) {
 	reqBody := orRequest{
 		Model: model,

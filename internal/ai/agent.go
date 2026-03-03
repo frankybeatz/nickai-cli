@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,6 +32,14 @@ const (
 	// MiniMax (OpenAI-compatible, free tier).
 	minimaxURL = "https://api.minimax.chat/v1/text/chatcompletion_v2"
 )
+
+// backoff returns an exponential delay with jitter for retry attempt n (1-indexed).
+// 1s base → ~1-2s, ~2-4s, ~4-8s.
+func backoff(attempt int) time.Duration {
+	base := float64(retryDelay) * math.Pow(2, float64(attempt-1))
+	jitter := base * (0.5 + rand.Float64()) // 50-150% of base
+	return time.Duration(jitter)
+}
 
 // Provider identifies which LLM backend to use.
 type Provider string
@@ -702,8 +712,9 @@ func (a *Agent) callAnthropic(ctx context.Context) (*apiResponse, error) {
 	var lastErr error
 	for attempt := range maxRetries {
 		if attempt > 0 {
-			logging.Debug("anthropic retry", "attempt", attempt+1, "model", a.modelID)
-			time.Sleep(retryDelay)
+			wait := backoff(attempt)
+			logging.Debug("anthropic retry", "attempt", attempt+1, "model", a.modelID, "backoff_ms", wait.Milliseconds())
+			time.Sleep(wait)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "POST", anthropicURL, bytes.NewReader(body))
@@ -902,7 +913,9 @@ func (a *Agent) callAnthropicStream(ctx context.Context, tokenCh chan<- string) 
 	var lastErr error
 	for attempt := range maxRetries {
 		if attempt > 0 {
-			time.Sleep(retryDelay)
+			wait := backoff(attempt)
+			logging.Debug("anthropic stream retry", "attempt", attempt+1, "backoff_ms", wait.Milliseconds())
+			time.Sleep(wait)
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "POST", anthropicURL, bytes.NewReader(body))

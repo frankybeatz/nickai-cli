@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nickai/cli/internal/safefile"
 )
@@ -162,20 +163,23 @@ func (s *Store) ForPrompt(maxTokens int) string {
 	for i, e := range sorted {
 		line := fmt.Sprintf("[%s] %s (%s)", e.Type, e.Content, e.CreatedAt.Format("2006-01-02"))
 		if i > 0 {
-			// Account for the newline separator.
 			if b.Len()+1+len(line) > maxChars {
 				break
 			}
 			b.WriteByte('\n')
-		} else {
-			if len(line) > maxChars {
-				b.WriteString(line[:maxChars])
-				return b.String()
-			}
+		} else if utf8.RuneCountInString(line) > maxChars {
+			// Truncate first line safely at rune boundary.
+			runes := []rune(line)
+			return string(runes[:maxChars])
 		}
 		b.WriteString(line)
 		if b.Len() >= maxChars {
-			return b.String()[:maxChars]
+			// Truncate accumulated text safely at rune boundary.
+			runes := []rune(b.String())
+			if len(runes) > maxChars {
+				return string(runes[:maxChars])
+			}
+			return b.String()
 		}
 	}
 	return b.String()

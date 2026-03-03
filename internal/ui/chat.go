@@ -571,7 +571,7 @@ func (m Model) Init() tea.Cmd {
 		if err != nil || len(mcpCfg.MCPServers) == 0 {
 			return mcpConnectedMsg{manager: nil}
 		}
-		mgr := mcp.NewClientManager()
+		mgr := mcp.NewClientManager(Version)
 		mgr.ConnectAll(mcpCfg)
 		mgr.RegisterTools(registry, mcp.RiskLimitsFunc(riskFn))
 		return mcpConnectedMsg{manager: mgr}

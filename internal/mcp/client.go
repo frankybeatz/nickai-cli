@@ -34,11 +34,13 @@ type ClientManager struct {
 	connections []*MCPConnection
 	failed      []FailedConnection
 	cfg         *MCPConfig // stored for reconnection
+	version     string     // app version for MCP handshake
 }
 
 // NewClientManager creates an empty client manager.
-func NewClientManager() *ClientManager {
-	return &ClientManager{}
+// version is the app version string sent during MCP initialization.
+func NewClientManager(version string) *ClientManager {
+	return &ClientManager{version: version}
 }
 
 // ConnectAll reads the MCP config and starts all configured servers.
@@ -85,7 +87,7 @@ func (cm *ClientManager) connect(name string, cfg MCPServerConfig) (*MCPConnecti
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{
 		Name:    "nickai",
-		Version: "0.4.0",
+		Version: cm.version,
 	}
 
 	_, err = client.Initialize(ctx, initReq)

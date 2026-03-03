@@ -82,13 +82,35 @@ func RunConsensus(client *OpenRouterClient, config ConsensusConfig, symbol strin
 	resultsCh := make(chan ModelVerdict, len(models))
 	var wg sync.WaitGroup
 
+	const perModelTimeout = 15 * time.Second
+
 	for _, model := range models {
 		wg.Add(1)
 		go func(m string) {
 			defer wg.Done()
 
 			start := time.Now()
-			resp, err := client.ChatCompletion(m, systemPrompt, userPrompt)
+
+			// Per-model timeout: prevents one slow model from blocking results.
+			type result struct {
+				resp string
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				r, e := client.ChatCompletion(m, systemPrompt, userPrompt)
+				done <- result{r, e}
+			}()
+
+			var resp string
+			var err error
+			select {
+			case r := <-done:
+				resp, err = r.resp, r.err
+			case <-time.After(perModelTimeout):
+				err = fmt.Errorf("timeout after %s", perModelTimeout)
+			}
+
 			elapsed := time.Since(start)
 
 			if err != nil {

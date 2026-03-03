@@ -141,6 +141,7 @@ func TestStateMachine(t *testing.T) {
 		ID:          "rule001",
 		Description: "Test rule",
 		Type:        RuleSchedule,
+		Schedule:    "daily",
 		Status:      "active",
 		MaxFires:    3,
 	})

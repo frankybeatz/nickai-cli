@@ -128,8 +128,28 @@ func Save(rules []AutoRule) error {
 	return safefile.AtomicWrite(path, data, 0o600)
 }
 
-// Add appends a new rule and saves.
+// Add appends a new rule and saves. Returns an error if the rule
+// has no meaningful trigger conditions (which would cause it to fire always).
 func Add(rule AutoRule) error {
+	switch rule.Type {
+	case RuleSchedule:
+		if rule.Schedule == "" && rule.IntervalSec == 0 {
+			return fmt.Errorf("schedule rule requires a schedule or interval")
+		}
+	case RuleCondition:
+		if rule.Symbol == "" || rule.Operator == "" {
+			return fmt.Errorf("condition rule requires symbol and operator")
+		}
+	case RulePortfolio:
+		if rule.MetricName == "" {
+			return fmt.Errorf("portfolio rule requires a metric name")
+		}
+	case RuleIndicator:
+		if len(rule.IndicatorConditions) == 0 {
+			return fmt.Errorf("indicator rule requires at least one condition")
+		}
+	}
+
 	path, _ := storePath()
 	mu := safefile.Lock(path)
 	mu.Lock()
