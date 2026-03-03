@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -226,7 +227,7 @@ func (c *PapernickClient) GetPrices(symbols []string) ([]Price, error) {
 	for i, s := range symbols {
 		normalized[i] = NormalizeSymbol(s)
 	}
-	path := "/prices?symbol=" + strings.Join(normalized, ",")
+	path := "/prices?symbol=" + url.QueryEscape(strings.Join(normalized, ","))
 	req, err := http.NewRequest("GET", c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
