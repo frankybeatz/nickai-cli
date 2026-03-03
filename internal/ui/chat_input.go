@@ -27,6 +27,15 @@ import (
 func (m Model) updateInsertMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc:
+		if m.watchMode {
+			m.watchMode = false
+			m.watchSymbols = nil
+			m.watchPrices = nil
+			m.watchHistory = nil
+			m.addBotMessage(BotMsgStyle.Render("nick: ") + "Watch mode ended.")
+			m.updateViewport()
+			return m, nil
+		}
 		if m.dashboardMode {
 			m.dashboardMode = false
 			m.addBotMessage(BotMsgStyle.Render("nick: ") + "Back to chat.")

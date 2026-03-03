@@ -72,6 +72,7 @@ var knownCommands = []string{
 	"/dashboard", "/dash",
 	"/vibe",
 	"/export",
+	"/plugin", "/plugins",
 }
 
 var knownSymbols = []string{
@@ -191,6 +192,24 @@ type tickerFetchMsg struct{}
 // tickerUpdateMsg carries refreshed ticker prices.
 type tickerUpdateMsg struct {
 	prices []api.Price
+}
+
+// wsPriceMsg carries a live price update from the Binance websocket.
+type wsPriceMsg struct {
+	symbol string
+	price  float64
+}
+
+// wsDisconnectedMsg signals the websocket has disconnected (for logging/fallback).
+type wsDisconnectedMsg struct{}
+
+// watchTickMsg triggers periodic refresh in watch mode.
+type watchTickMsg struct{}
+
+// watchDataMsg carries refreshed watch data.
+type watchDataMsg struct {
+	prices  []api.Price
+	history map[string][]float64
 }
 
 // consensusDoneMsg carries the result of an async consensus run.
@@ -329,6 +348,17 @@ type Model struct {
 
 	// Ticker direction tracking.
 	prevTickerPrices map[string]float64
+
+	// Websocket live price streaming.
+	binanceWS  *api.BinanceWS
+	wsPriceCh  chan wsPriceMsg
+	wsActive   bool
+
+	// Watch mode.
+	watchMode    bool
+	watchSymbols []string
+	watchPrices  []api.Price
+	watchHistory map[string][]float64
 
 	// Status flash (brief confirmations).
 	statusFlash       string
@@ -490,6 +520,9 @@ func New() Model {
 
 // cleanup shuts down MCP connections, saves history, and summarizes session.
 func (m Model) cleanup() {
+	if m.binanceWS != nil {
+		m.binanceWS.StopWebSocket()
+	}
 	if m.mcpManager != nil {
 		m.mcpManager.CloseAll()
 	}
@@ -625,6 +658,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					return tickerUpdateMsg{prices: prices}
 				})
+				// Start Binance websocket for real-time price updates.
+				priceCh := make(chan wsPriceMsg, 50)
+				m.wsPriceCh = priceCh
+				ws, err := api.StartWebSocket([]string{"BTC", "ETH", "SOL"}, func(symbol string, price float64) {
+					select {
+					case priceCh <- wsPriceMsg{symbol: symbol, price: price}:
+					default:
+					}
+				})
+				if err == nil {
+					m.binanceWS = ws
+					m.wsActive = true
+					bootCmds = append(bootCmds, waitForWSPrice(priceCh))
+				}
 			}
 			return m, tea.Batch(bootCmds...)
 		}
@@ -1119,9 +1166,72 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return mcpHealthMsg{}
 		})
 
+	case wsDisconnectedMsg:
+		m.wsActive = false
+		m.wsPriceCh = nil
+		return m, nil
+
+	case wsPriceMsg:
+		if !m.wsActive {
+			return m, nil
+		}
+		if m.prevTickerPrices == nil {
+			m.prevTickerPrices = make(map[string]float64)
+		}
+		found := false
+		for i, p := range m.tickerPrices {
+			if p.Symbol == msg.symbol {
+				m.prevTickerPrices[p.Symbol] = p.Price
+				m.tickerPrices[i].Price = msg.price
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.tickerPrices = append(m.tickerPrices, api.Price{Symbol: msg.symbol, Price: msg.price})
+		}
+		if m.wsPriceCh != nil {
+			return m, waitForWSPrice(m.wsPriceCh)
+		}
+		return m, nil
+
+	case watchTickMsg:
+		if !m.watchMode {
+			return m, nil
+		}
+		symbols := m.watchSymbols
+		client := m.client
+		return m, func() tea.Msg {
+			prices, _ := client.GetPrices(symbols)
+			history := make(map[string][]float64)
+			for _, sym := range symbols {
+				if candles, err := market.FetchKlines(sym, "1h", 24); err == nil && len(candles) > 0 {
+					prices := make([]float64, len(candles))
+					for j, c := range candles {
+						prices[j] = c.Close
+					}
+					history[sym] = prices
+				}
+			}
+			return watchDataMsg{prices: prices, history: history}
+		}
+
+	case watchDataMsg:
+		m.watchPrices = msg.prices
+		m.watchHistory = msg.history
+		if m.watchMode {
+			return m, tea.Tick(5*time.Second, func(t time.Time) tea.Msg { return watchTickMsg{} })
+		}
+		return m, nil
+
 	case tickerFetchMsg:
 		if !m.tickerTicking {
 			return m, nil
+		}
+		if m.wsActive {
+			return m, tea.Tick(15*time.Second, func(t time.Time) tea.Msg {
+				return tickerFetchMsg{}
+			})
 		}
 		client := m.client
 		return m, func() tea.Msg {
@@ -1172,6 +1282,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			fmt.Print("\033[?1049l\033[?25h\033[0m")
 			// Save non-blocking state.
 			saveInputHistory(m.inputHistory)
+			if m.binanceWS != nil {
+				m.binanceWS.StopWebSocket()
+			}
 			// Force-exit. MCP cleanup is skipped — OS will reap child processes.
 			os.Exit(0)
 		}
@@ -1325,7 +1438,10 @@ func (m Model) View() string {
 	inputBar := m.renderInputBar()
 
 	var base string
-	if m.dashboardMode {
+	if m.watchMode {
+		watchContent := m.renderWatchView()
+		base = topBar + "\n" + watchContent + "\n" + inputBar
+	} else if m.dashboardMode {
 		dashContent := m.renderDashboard()
 		base = topBar + "\n" + dashContent + "\n" + inputBar
 	} else {

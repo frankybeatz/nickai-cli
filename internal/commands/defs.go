@@ -144,6 +144,14 @@ var Registry = []CommandDef{
 		{Name: "portfolio", Description: "Export portfolio positions"},
 		{Name: "backtest", Description: "Export last backtest results"},
 	}},
+
+	// --- Plugins ---
+	{Type: TypePlugin, Primary: "/plugin", Aliases: []string{"/plugins"}, Description: "Manage MCP server plugins", Category: "Setup", SubCommands: []SubCommandDef{
+		{Name: "list", Description: "List installed and available plugins"},
+		{Name: "install", Description: "Install an MCP server plugin"},
+		{Name: "remove", Description: "Remove an installed plugin"},
+		{Name: "search", Description: "Search available plugins"},
+	}},
 }
 
 // BuildCommandMap generates the allCommands routing map from the Registry.

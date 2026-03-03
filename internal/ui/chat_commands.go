@@ -351,6 +351,9 @@ func (m Model) dispatchCommand(result commands.Result) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case commands.TypeWatch:
+		return m.handleWatchCommand(result.Args)
+
 	case commands.TypeDashboard:
 		m.dashboardMode = !m.dashboardMode
 		if m.dashboardMode {
@@ -501,19 +504,8 @@ func (m *Model) renderResult(r commands.Result) string {
 		}
 		return RenderManIndex()
 
-	case commands.TypeWatch:
-		if !m.client.IsConfigured() {
-			return connectPrompt()
-		}
-		if len(r.Args) == 0 {
-			return ErrorStyle.Render("  Usage: ") +
-				CommandStyle.Render("/watch BTC ETH SOL")
-		}
-		symbols := make([]string, len(r.Args))
-		for i, s := range r.Args {
-			symbols[i] = strings.ToUpper(s)
-		}
-		return RenderWatch(m.client, symbols, m.width)
+	case commands.TypePlugin:
+		return m.handlePlugin(r.Args)
 
 	case commands.TypeUnknown:
 		hint := DimStyle.Render("Type /help for available commands.")

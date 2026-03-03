@@ -368,3 +368,15 @@ func buildGuidancePrompt(stage guidance.Stage, ctx guidance.StageContext) string
 
 	return sb.String()
 }
+
+// waitForWSPrice returns a Bubbletea command that waits for the next
+// price update from the websocket channel.
+func waitForWSPrice(ch <-chan wsPriceMsg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return wsDisconnectedMsg{}
+		}
+		return msg
+	}
+}

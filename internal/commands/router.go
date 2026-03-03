@@ -65,6 +65,7 @@ const (
 	TypeDashboard // /dashboard, /dash
 	TypeVibe      // /vibe
 	TypeExport    // /export
+	TypePlugin    // /plugin
 
 	TypeUnknown
 )
