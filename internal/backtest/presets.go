@@ -123,6 +123,104 @@ var backtestPresets = []PresetStrategy{
 			CommissionBps: 10,
 		},
 	},
+	// ── Short strategies ──
+	{
+		Description: "Short when RSI overbought, cover when oversold",
+		Strategy: Strategy{
+			Name:          "rsi-short",
+			Side:          "short",
+			EntryRules:    []Condition{{Indicator: "rsi", Operator: ">", Value: 70}},
+			ExitRules:     []Condition{{Indicator: "rsi", Operator: "<", Value: 30}},
+			StopLossPct:   5,
+			TakeProfitPct: 15,
+			PositionSize:  1.0,
+			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
+		},
+	},
+	{
+		Description: "Short on MACD bearish crossover, cover on bullish",
+		Strategy: Strategy{
+			Name:          "macd-short",
+			Side:          "short",
+			EntryRules:    []Condition{{Indicator: "macd_histogram", Operator: "crosses_below", Value: 0}},
+			ExitRules:     []Condition{{Indicator: "macd_histogram", Operator: "crosses_above", Value: 0}},
+			StopLossPct:   8,
+			TakeProfitPct: 0,
+			PositionSize:  1.0,
+			Period:        "180d",
+			SlippageBps:   10,
+			CommissionBps: 10,
+		},
+	},
+	// ── Research-derived strategies ──
+	{
+		Description: "Risk-on when trend + momentum + volume align (AND logic, hysteresis exit)",
+		Strategy: Strategy{
+			Name: "and-tre-mom-dir",
+			EntryRules: []Condition{
+				{Indicator: "trend", Operator: ">", Value: 0.05},
+				{Indicator: "momentum", Operator: ">", Value: 0.05},
+				{Indicator: "dir_volume", Operator: ">", Value: 0.05},
+			},
+			ExitRules: []Condition{
+				{Indicator: "trend", Operator: "<", Value: -0.05},
+				{Indicator: "momentum", Operator: "<", Value: -0.05},
+				{Indicator: "dir_volume", Operator: "<", Value: -0.05},
+			},
+			ExitLogic:     "or",
+			StopLossPct:   0,
+			TakeProfitPct: 0,
+			PositionSize:  1.0,
+			Period:        "1y",
+			SlippageBps:   10,
+			CommissionBps: 10,
+		},
+	},
+	{
+		Description: "Risk-on when trend + momentum both positive (2-feature AND)",
+		Strategy: Strategy{
+			Name: "and-tre-mom",
+			EntryRules: []Condition{
+				{Indicator: "trend", Operator: ">", Value: 0.05},
+				{Indicator: "momentum", Operator: ">", Value: 0.05},
+			},
+			ExitRules: []Condition{
+				{Indicator: "trend", Operator: "<", Value: -0.05},
+				{Indicator: "momentum", Operator: "<", Value: -0.05},
+			},
+			ExitLogic:     "or",
+			StopLossPct:   0,
+			TakeProfitPct: 0,
+			PositionSize:  1.0,
+			Period:        "1y",
+			SlippageBps:   10,
+			CommissionBps: 10,
+		},
+	},
+	{
+		Description: "Avoid drawdowns + high vol regimes, stay in calm uptrends",
+		Strategy: Strategy{
+			Name: "calm-trend",
+			EntryRules: []Condition{
+				{Indicator: "trend", Operator: ">", Value: 0.05},
+				{Indicator: "vol_regime", Operator: ">", Value: 0},
+				{Indicator: "drawdown", Operator: ">", Value: -0.1},
+			},
+			ExitRules: []Condition{
+				{Indicator: "trend", Operator: "<", Value: -0.05},
+				{Indicator: "vol_regime", Operator: "<", Value: -0.3},
+			},
+			ExitLogic:     "or",
+			StopLossPct:   0,
+			TakeProfitPct: 0,
+			PositionSize:  1.0,
+			Period:        "1y",
+			SlippageBps:   10,
+			CommissionBps: 10,
+		},
+	},
 }
 
 // analysisPresets are live AI-driven analysis templates.

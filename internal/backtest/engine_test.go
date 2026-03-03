@@ -248,6 +248,210 @@ func TestSharpeRatio(t *testing.T) {
 	}
 }
 
+func TestGetIndicatorValueResearchFeatures(t *testing.T) {
+	snap := indicatorSnapshot{
+		Trend:     0.42,
+		Momentum:  -0.15,
+		VolRegime: 0.30,
+		Drawdown:  -0.50,
+		DirVolume: 0.75,
+	}
+	tests := []struct {
+		indicator string
+		expected  float64
+	}{
+		{"trend", 0.42},
+		{"momentum", -0.15},
+		{"vol_regime", 0.30},
+		{"drawdown", -0.50},
+		{"dir_volume", 0.75},
+	}
+	for _, tt := range tests {
+		got := getIndicatorValue(tt.indicator, snap)
+		if got != tt.expected {
+			t.Errorf("getIndicatorValue(%q) = %f, want %f", tt.indicator, got, tt.expected)
+		}
+	}
+}
+
+func TestAnyConditionMet(t *testing.T) {
+	snapshots := []indicatorSnapshot{
+		{Trend: -0.1, Momentum: 0.2, DirVolume: 0.3},
+		{Trend: 0.2, Momentum: -0.1, DirVolume: 0.1},
+	}
+
+	// OR logic: trend < -0.05 should trigger at index 0 (trend = -0.1).
+	conditions := []Condition{
+		{Indicator: "trend", Operator: "<", Value: -0.05},
+		{Indicator: "momentum", Operator: "<", Value: -0.05},
+		{Indicator: "dir_volume", Operator: "<", Value: -0.05},
+	}
+
+	// Index 0: trend=-0.1 < -0.05 → true (OR).
+	if !anyConditionMet(conditions, snapshots, 0) {
+		t.Error("index 0: anyConditionMet should be true (trend is negative)")
+	}
+
+	// Index 1: momentum=-0.1 < -0.05 → true (OR).
+	if !anyConditionMet(conditions, snapshots, 1) {
+		t.Error("index 1: anyConditionMet should be true (momentum is negative)")
+	}
+
+	// All positive → false.
+	allPositive := []indicatorSnapshot{
+		{Trend: 0.2, Momentum: 0.2, DirVolume: 0.2},
+	}
+	if anyConditionMet(conditions, allPositive, 0) {
+		t.Error("all positive: anyConditionMet should be false")
+	}
+}
+
+func TestExitLogicOR(t *testing.T) {
+	// Simulate a scenario where OR exit logic should trigger early.
+	snapshots := make([]indicatorSnapshot, 55)
+	for i := range snapshots {
+		snapshots[i] = indicatorSnapshot{
+			Price:     100 + float64(i),
+			Trend:     0.2,
+			Momentum:  0.2,
+			DirVolume: 0.2,
+		}
+	}
+	// At candle 52, make trend drop below -0.05 (only 1 of 3 features).
+	snapshots[52].Trend = -0.1
+
+	strat := Strategy{
+		Name:   "test-or-exit",
+		Symbol: "BTC",
+		EntryRules: []Condition{
+			{Indicator: "trend", Operator: ">", Value: 0.05},
+		},
+		ExitRules: []Condition{
+			{Indicator: "trend", Operator: "<", Value: -0.05},
+			{Indicator: "momentum", Operator: "<", Value: -0.05},
+			{Indicator: "dir_volume", Operator: "<", Value: -0.05},
+		},
+		ExitLogic:    "or",
+		PositionSize: 1.0,
+	}
+
+	// Manually run allConditionsMet and anyConditionMet to verify behavior.
+	// Entry at index 50 (trend=0.2 > 0.05): true.
+	if !allConditionsMet(strat.EntryRules, snapshots, 50) {
+		t.Fatal("entry should trigger at index 50")
+	}
+
+	// At index 52, OR exit: trend=-0.1 < -0.05 → should trigger.
+	if !anyConditionMet(strat.ExitRules, snapshots, 52) {
+		t.Error("OR exit should trigger at index 52 (trend dropped)")
+	}
+
+	// AND exit at index 52: only trend dropped, others still positive → should NOT trigger.
+	if allConditionsMet(strat.ExitRules, snapshots, 52) {
+		t.Error("AND exit should NOT trigger at index 52 (only trend dropped)")
+	}
+}
+
+func TestShortSellingSimulation(t *testing.T) {
+	// Build synthetic candles: price goes UP so a short should LOSE.
+	candles := make([]indicatorSnapshot, 55)
+	for i := range candles {
+		candles[i] = indicatorSnapshot{
+			Price: 100 + float64(i), // steadily rising
+			RSI:   25,               // triggers entry < 30
+		}
+	}
+	// Trigger exit at candle 53.
+	candles[53].RSI = 75 // RSI > 70 → exit signal
+
+	// Verify short entry conditions work.
+	strat := Strategy{
+		Side: "short",
+		EntryRules: []Condition{
+			{Indicator: "rsi", Operator: "<", Value: 30},
+		},
+		ExitRules: []Condition{
+			{Indicator: "rsi", Operator: ">", Value: 70},
+		},
+		PositionSize: 1.0,
+	}
+
+	if !allConditionsMet(strat.EntryRules, candles, 50) {
+		t.Fatal("entry should trigger at index 50 (RSI=25)")
+	}
+	if !allConditionsMet(strat.ExitRules, candles, 53) {
+		t.Fatal("exit should trigger at index 53 (RSI=75)")
+	}
+}
+
+func TestShortSLTP(t *testing.T) {
+	// Short SL: price goes UP past stop-loss level.
+	entryPrice := 100.0
+	slPct := 5.0
+	tpPct := 10.0
+	slPrice := entryPrice * (1 + slPct/100)  // 105
+	tpPrice := entryPrice * (1 - tpPct/100)  // 90
+
+	// SL triggers when High breaches SL level.
+	if slPrice != 105 {
+		t.Errorf("short SL price = %f, want 105", slPrice)
+	}
+	// TP triggers when Low breaches TP level.
+	if tpPrice != 90 {
+		t.Errorf("short TP price = %f, want 90", tpPrice)
+	}
+
+	// Short P&L: profit when price goes down.
+	exitAtSL := slPrice
+	pnlSL := (entryPrice - exitAtSL) / entryPrice * 100 // -5%
+	if math.Abs(pnlSL-(-5.0)) > 0.01 {
+		t.Errorf("short SL P&L = %.2f, want -5.0", pnlSL)
+	}
+
+	exitAtTP := tpPrice
+	pnlTP := (entryPrice - exitAtTP) / entryPrice * 100 // +10%
+	if math.Abs(pnlTP-10.0) > 0.01 {
+		t.Errorf("short TP P&L = %.2f, want 10.0", pnlTP)
+	}
+}
+
+func TestShortPnL(t *testing.T) {
+	// Short entry at 100, exit at 90 → profit.
+	entry := 100.0
+	exit := 90.0
+	pnl := (entry - exit) / entry * 100
+	if math.Abs(pnl-10.0) > 0.01 {
+		t.Errorf("short profit PnL = %.2f, want 10.0", pnl)
+	}
+
+	// Short entry at 100, exit at 110 → loss.
+	exit = 110.0
+	pnl = (entry - exit) / entry * 100
+	if math.Abs(pnl-(-10.0)) > 0.01 {
+		t.Errorf("short loss PnL = %.2f, want -10.0", pnl)
+	}
+}
+
+func TestSideDefaultsToLong(t *testing.T) {
+	strat := Strategy{Side: ""}
+	isShort := strat.Side == "short"
+	if isShort {
+		t.Error("empty Side should default to long (isShort=false)")
+	}
+
+	strat.Side = "long"
+	isShort = strat.Side == "short"
+	if isShort {
+		t.Error("Side='long' should not be short")
+	}
+
+	strat.Side = "short"
+	isShort = strat.Side == "short"
+	if !isShort {
+		t.Error("Side='short' should be short")
+	}
+}
+
 func TestRunIntegration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

@@ -16,6 +16,7 @@ import (
 type Strategy struct {
 	Name          string      `json:"name,omitempty"`
 	Symbol        string      `json:"symbol"`
+	Side          string      `json:"side,omitempty"`            // "long" (default), "short", or "both"
 	EntryRules    []Condition `json:"entry_conditions"`
 	ExitRules     []Condition `json:"exit_conditions"`
 	StopLossPct   float64     `json:"stop_loss_pct,omitempty"`
@@ -24,6 +25,7 @@ type Strategy struct {
 	Period        string      `json:"period,omitempty"`         // e.g. "180d", "1y"
 	SlippageBps   float64     `json:"slippage_bps,omitempty"`   // slippage in basis points (e.g. 10 = 0.1%)
 	CommissionBps float64     `json:"commission_bps,omitempty"` // commission in basis points per trade
+	ExitLogic     string      `json:"exit_logic,omitempty"`     // "and" (default) or "or"
 }
 
 // Condition represents a single rule for entry/exit.
@@ -49,6 +51,26 @@ type Result struct {
 	BestTrade    float64   `json:"best_trade"`
 	WorstTrade   float64   `json:"worst_trade"`
 	EquityCurve  []float64 `json:"equity_curve"`
+
+	// Advanced metrics (from metrics.go).
+	SortinoRatio    float64 `json:"sortino_ratio"`
+	CalmarRatio     float64 `json:"calmar_ratio"`
+	OmegaRatio      float64 `json:"omega_ratio"`
+	RecoveryFactor  float64 `json:"recovery_factor"`
+	Expectancy      float64 `json:"expectancy"`
+	TailRatio       float64 `json:"tail_ratio"`
+	VaR95           float64 `json:"var_95"`
+	CVaR95          float64 `json:"cvar_95"`
+	MaxDDDuration   int     `json:"max_dd_duration"`
+	TimeInMarketPct float64 `json:"time_in_market_pct"`
+	AvgTradeBars    float64 `json:"avg_trade_bars"`
+
+	// Benchmarks.
+	HODLReturn float64 `json:"hodl_return"`
+	DCAReturn  float64 `json:"dca_return"`
+
+	// Monte Carlo simulation.
+	MonteCarlo *MonteCarloResult `json:"monte_carlo,omitempty"`
 }
 
 // Trade records a single entry/exit pair.
@@ -75,6 +97,13 @@ type indicatorSnapshot struct {
 	EMA26          float64
 	Price          float64
 	FearGreed      float64
+
+	// Research features (normalized to [-1, 1]).
+	Trend     float64 // EMA12/EMA26 ratio
+	Momentum  float64 // Risk-adjusted ROC 20d
+	VolRegime float64 // Short/long vol ratio (10d/60d)
+	Drawdown  float64 // Distance to 20d high
+	DirVolume float64 // Volume-weighted price direction
 }
 
 // ParsePeriod converts a period string like "180d", "1y", "6m" to days.
@@ -115,6 +144,7 @@ func ParsePeriod(s string) (int, error) {
 }
 
 // Run executes a backtest strategy against historical data.
+// It fetches candles from Binance and delegates to RunWithCandles.
 func Run(strat Strategy) (*Result, error) {
 	if strat.Symbol == "" {
 		return nil, fmt.Errorf("symbol is required")
@@ -132,62 +162,76 @@ func Run(strat Strategy) (*Result, error) {
 	} else if interval == "1h" {
 		limit = days * 24
 	}
-	if limit > 1000 {
-		limit = 1000
-	}
 
-	candles, err := market.FetchKlines(strat.Symbol, interval, limit)
+	candles, err := market.FetchKlinesPaginated(strat.Symbol, interval, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch market data: %w", err)
 	}
+
+	result, err := RunWithCandles(strat, candles, interval)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch historical Fear & Greed data if any condition uses it.
+	// This is done after RunWithCandles since it requires network access
+	// and RunWithCandles is designed to work offline with pre-fetched candles.
+	// Re-run with fear & greed data if needed.
+	if needsFearGreed(strat) {
+		fgData, fgErr := market.FetchHistoricalFearGreed(days + 10)
+		if fgErr != nil {
+			logging.Debug("backtest fear_greed data unavailable, indicator will use default value", "error", fgErr)
+		}
+		if len(fgData) > 0 {
+			result, err = runWithCandlesAndFG(strat, candles, interval, fgData)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Compute benchmarks from candle data (using warmup-adjusted range).
+	closePrices := market.ClosePrices(candles)
+	if len(candles) > 50 {
+		startPrice := closePrices[50]
+		endPrice := closePrices[len(closePrices)-1]
+		if startPrice > 0 {
+			result.HODLReturn = (endPrice/startPrice - 1) * 100
+		}
+		result.DCAReturn = computeDCAReturn(candles[50:], interval)
+	}
+
+	// Run Monte Carlo simulation if we have enough trades.
+	if len(result.Trades) >= 5 {
+		result.MonteCarlo = RunMonteCarlo(result.Trades, result, 1000, interval)
+	}
+
+	return result, nil
+}
+
+// RunWithCandles executes a backtest on pre-fetched candle data.
+// This is the core simulation function. Run() wraps this with data fetching.
+// It does not fetch Fear & Greed data or run Monte Carlo — those are added by Run().
+func RunWithCandles(strat Strategy, candles []market.Candle, interval string) (*Result, error) {
+	return runWithCandlesAndFG(strat, candles, interval, nil)
+}
+
+// runWithCandlesAndFG is the internal simulation function that accepts optional Fear & Greed data.
+func runWithCandlesAndFG(strat Strategy, candles []market.Candle, interval string, fgData []market.FearGreedDay) (*Result, error) {
 	if len(candles) < 50 {
 		return nil, fmt.Errorf("insufficient data: got %d candles, need at least 50 for indicator warmup", len(candles))
 	}
 
 	closePrices := market.ClosePrices(candles)
 
-	// Fetch historical Fear & Greed data if any condition uses it.
-	var fgData []market.FearGreedDay
-	if needsFearGreed(strat) {
-		fgData, _ = market.FetchHistoricalFearGreed(days + 10)
+	// Extract volumes for research features.
+	volumes := make([]float64, len(candles))
+	for i, c := range candles {
+		volumes[i] = c.Volume
 	}
 
-	// Pre-compute indicator snapshots.
-	snapshots := make([]indicatorSnapshot, len(candles))
-	for i := range candles {
-		slice := closePrices[:i+1]
-		snap := indicatorSnapshot{
-			Price: closePrices[i],
-		}
-		if len(slice) > 14 {
-			snap.RSI = indicators.RSI(slice, 14)
-		} else {
-			snap.RSI = 50
-		}
-		if len(slice) >= 26 {
-			snap.MACD, snap.MACDSignal, snap.MACDHistogram = indicators.MACDCalc(slice)
-		}
-		if len(slice) >= 20 {
-			snap.BollingerUpper, _, snap.BollingerLower = indicators.BollingerBands(slice, 20)
-			snap.SMA20 = indicators.SMA(slice, 20)
-		}
-		if len(slice) >= 50 {
-			snap.SMA50 = indicators.SMA(slice, 50)
-		}
-		if len(slice) >= 12 {
-			snap.EMA12 = indicators.EMA(slice, 12)
-		}
-		if len(slice) >= 26 {
-			snap.EMA26 = indicators.EMA(slice, 26)
-		}
-
-		// Map Fear & Greed to candle timestamp.
-		if len(fgData) > 0 {
-			snap.FearGreed = findFearGreed(fgData, candles[i].OpenTime)
-		}
-
-		snapshots[i] = snap
-	}
+	// Pre-compute indicator snapshots using streaming indicators (O(1) per candle).
+	snapshots := computeSnapshots(closePrices, volumes, candles, fgData)
 
 	if strat.PositionSize <= 0 || strat.PositionSize > 1 {
 		strat.PositionSize = 1.0
@@ -196,6 +240,9 @@ func Run(strat Strategy) (*Result, error) {
 	// Slippage and commission as multipliers (basis points → fraction).
 	slippage := strat.SlippageBps / 10000.0
 	commission := strat.CommissionBps / 10000.0
+
+	// Determine position side. Default is long.
+	isShort := strat.Side == "short"
 
 	// Walk candles and simulate.
 	var trades []Trade
@@ -213,41 +260,88 @@ func Run(strat Strategy) (*Result, error) {
 			// Check entry conditions.
 			if allConditionsMet(strat.EntryRules, snapshots, i) {
 				inPosition = true
-				// Simulate slippage: buying at a slightly higher price.
-				entryPrice = price * (1 + slippage)
+				if isShort {
+					// Short entry: sell at slightly lower price (slippage against us).
+					entryPrice = price * (1 - slippage)
+				} else {
+					// Long entry: buy at slightly higher price.
+					entryPrice = price * (1 + slippage)
+				}
 				entryTime = candles[i].OpenTime
-				// Commission on entry reduces equity.
 				equity *= (1 - commission*strat.PositionSize)
 			}
 		} else {
-			// Check exit conditions.
-			// Simulate slippage: selling at a slightly lower price.
-			exitPrice := price * (1 - slippage)
-			pnlPct := (exitPrice - entryPrice) / entryPrice * 100
-
 			reason := ""
 			shouldExit := false
+			exitPrice := 0.0
 
-			// Stop loss.
-			if strat.StopLossPct > 0 && pnlPct <= -strat.StopLossPct {
-				shouldExit = true
-				reason = "stop_loss"
+			// Intrabar SL/TP checks. For shorts, directions are inverted:
+			//   Short SL: price goes UP (High breaches SL level)
+			//   Short TP: price goes DOWN (Low breaches TP level)
+			if strat.StopLossPct > 0 {
+				if isShort {
+					slPrice := entryPrice * (1 + strat.StopLossPct/100)
+					if candles[i].High >= slPrice {
+						shouldExit = true
+						exitPrice = slPrice * (1 + slippage)
+						reason = "stop_loss"
+					}
+				} else {
+					slPrice := entryPrice * (1 - strat.StopLossPct/100)
+					if candles[i].Low <= slPrice {
+						shouldExit = true
+						exitPrice = slPrice * (1 - slippage)
+						reason = "stop_loss"
+					}
+				}
 			}
-			// Take profit.
-			if !shouldExit && strat.TakeProfitPct > 0 && pnlPct >= strat.TakeProfitPct {
-				shouldExit = true
-				reason = "take_profit"
+			if !shouldExit && strat.TakeProfitPct > 0 {
+				if isShort {
+					tpPrice := entryPrice * (1 - strat.TakeProfitPct/100)
+					if candles[i].Low <= tpPrice {
+						shouldExit = true
+						exitPrice = tpPrice * (1 + slippage)
+						reason = "take_profit"
+					}
+				} else {
+					tpPrice := entryPrice * (1 + strat.TakeProfitPct/100)
+					if candles[i].High >= tpPrice {
+						shouldExit = true
+						exitPrice = tpPrice * (1 - slippage)
+						reason = "take_profit"
+					}
+				}
 			}
-			// Exit rules.
-			if !shouldExit && len(strat.ExitRules) > 0 && allConditionsMet(strat.ExitRules, snapshots, i) {
-				shouldExit = true
-				reason = "exit_signal"
+
+			// Signal-based exit uses close price.
+			if !shouldExit && len(strat.ExitRules) > 0 {
+				var exitMet bool
+				if strat.ExitLogic == "or" {
+					exitMet = anyConditionMet(strat.ExitRules, snapshots, i)
+				} else {
+					exitMet = allConditionsMet(strat.ExitRules, snapshots, i)
+				}
+				if exitMet {
+					shouldExit = true
+					if isShort {
+						exitPrice = price * (1 + slippage)
+					} else {
+						exitPrice = price * (1 - slippage)
+					}
+					reason = "exit_signal"
+				}
 			}
 
 			if shouldExit {
+				var pnlPct float64
+				if isShort {
+					// Short P&L: profit when price goes down.
+					pnlPct = (entryPrice - exitPrice) / entryPrice * 100
+				} else {
+					pnlPct = (exitPrice - entryPrice) / entryPrice * 100
+				}
 				actualPnl := pnlPct * strat.PositionSize / 100
 				equity *= (1 + actualPnl)
-				// Commission on exit.
 				equity *= (1 - commission*strat.PositionSize)
 				trades = append(trades, Trade{
 					EntryTime:  entryTime,
@@ -266,8 +360,14 @@ func Run(strat Strategy) (*Result, error) {
 	// Close open position at end of period.
 	if inPosition && len(candles) > 0 {
 		lastPrice := closePrices[len(closePrices)-1]
-		exitPrice := lastPrice * (1 - slippage)
-		pnlPct := (exitPrice - entryPrice) / entryPrice * 100
+		var exitPrice, pnlPct float64
+		if isShort {
+			exitPrice = lastPrice * (1 + slippage)
+			pnlPct = (entryPrice - exitPrice) / entryPrice * 100
+		} else {
+			exitPrice = lastPrice * (1 - slippage)
+			pnlPct = (exitPrice - entryPrice) / entryPrice * 100
+		}
 		actualPnl := pnlPct * strat.PositionSize / 100
 		equity *= (1 + actualPnl)
 		equity *= (1 - commission*strat.PositionSize)
@@ -286,7 +386,91 @@ func Run(strat Strategy) (*Result, error) {
 	return result, nil
 }
 
-// allConditionsMet checks if all conditions are met at candle index i.
+// computeSnapshots builds indicator snapshots for all candles using streaming indicators.
+func computeSnapshots(closePrices []float64, volumes []float64, candles []market.Candle, fgData []market.FearGreedDay) []indicatorSnapshot {
+	streamRSI := indicators.NewStreamRSI(14)
+	streamMACD := indicators.NewStreamMACD(12, 26, 9)
+	streamBoll := indicators.NewStreamBollinger(20)
+	streamSMA20 := indicators.NewStreamSMA(20)
+	streamSMA50 := indicators.NewStreamSMA(50)
+	streamEMA12 := indicators.NewStreamEMA(12)
+	streamEMA26 := indicators.NewStreamEMA(26)
+
+	snapshots := make([]indicatorSnapshot, len(candles))
+	for i := range candles {
+		price := closePrices[i]
+		snap := indicatorSnapshot{Price: price}
+
+		snap.RSI = streamRSI.Update(price)
+		snap.MACD, snap.MACDSignal, snap.MACDHistogram = streamMACD.Update(price)
+		snap.BollingerUpper, _, snap.BollingerLower = streamBoll.Update(price)
+		snap.SMA20 = streamSMA20.Update(price)
+		snap.SMA50 = streamSMA50.Update(price)
+		snap.EMA12 = streamEMA12.Update(price)
+		snap.EMA26 = streamEMA26.Update(price)
+
+		if streamEMA26.Ready() {
+			snap.Trend = indicators.TrendFeature(snap.EMA12, snap.EMA26)
+		}
+
+		// Research features requiring lookback windows (still use slice-based,
+		// but these are O(period) not O(n) — bounded cost per candle).
+		slice := closePrices[:i+1]
+		if len(slice) >= 21 {
+			snap.Momentum = indicators.MomentumFeature(slice, 20)
+			snap.Drawdown = indicators.DrawdownFeature(slice, 20)
+			if len(volumes) > i {
+				volSlice := volumes[:i+1]
+				snap.DirVolume = indicators.DirVolumeFeature(slice, volSlice, 20)
+			}
+		}
+		if len(slice) >= 61 {
+			snap.VolRegime = indicators.VolRegimeFeature(slice, 10, 60)
+		}
+
+		// Map Fear & Greed to candle timestamp.
+		if len(fgData) > 0 {
+			snap.FearGreed = findFearGreed(fgData, candles[i].OpenTime)
+		}
+
+		snapshots[i] = snap
+	}
+	return snapshots
+}
+
+// computeDCAReturn simulates weekly dollar-cost averaging over the candle range.
+func computeDCAReturn(candles []market.Candle, interval string) float64 {
+	if len(candles) == 0 {
+		return 0
+	}
+
+	// Determine bars per week based on interval.
+	barsPerWeek := 7 // daily
+	switch interval {
+	case "4h":
+		barsPerWeek = 7 * 6
+	case "1h":
+		barsPerWeek = 7 * 24
+	}
+
+	totalInvested := 0.0
+	totalUnits := 0.0
+	investPerWeek := 100.0 // arbitrary fixed amount
+
+	for i := 0; i < len(candles); i += barsPerWeek {
+		totalInvested += investPerWeek
+		totalUnits += investPerWeek / candles[i].Close
+	}
+
+	if totalInvested == 0 || totalUnits == 0 {
+		return 0
+	}
+
+	finalValue := totalUnits * candles[len(candles)-1].Close
+	return (finalValue/totalInvested - 1) * 100
+}
+
+// allConditionsMet checks if all conditions are met at candle index i (AND logic).
 func allConditionsMet(conditions []Condition, snapshots []indicatorSnapshot, i int) bool {
 	for _, cond := range conditions {
 		if !evalCondition(cond, snapshots, i) {
@@ -294,6 +478,16 @@ func allConditionsMet(conditions []Condition, snapshots []indicatorSnapshot, i i
 		}
 	}
 	return true
+}
+
+// anyConditionMet checks if any condition is met at candle index i (OR logic).
+func anyConditionMet(conditions []Condition, snapshots []indicatorSnapshot, i int) bool {
+	for _, cond := range conditions {
+		if evalCondition(cond, snapshots, i) {
+			return true
+		}
+	}
+	return false
 }
 
 // evalCondition evaluates a single condition at candle index i.
@@ -366,6 +560,16 @@ func getIndicatorValue(indicator string, snap indicatorSnapshot) float64 {
 		return snap.Price
 	case "fear_greed":
 		return snap.FearGreed
+	case "trend":
+		return snap.Trend
+	case "momentum":
+		return snap.Momentum
+	case "vol_regime":
+		return snap.VolRegime
+	case "drawdown":
+		return snap.Drawdown
+	case "dir_volume":
+		return snap.DirVolume
 	default:
 		logging.Debug("backtest unknown indicator", "indicator", indicator)
 		return 0
@@ -425,6 +629,19 @@ func computeMetrics(strat Strategy, trades []Trade, equityCurve []float64, inter
 
 	// Sharpe ratio (annualized based on candle interval).
 	result.SharpeRatio = sharpeRatio(equityCurve, interval)
+
+	// Advanced metrics.
+	result.SortinoRatio = sortinoRatio(equityCurve, interval)
+	result.CalmarRatio = calmarRatio(equityCurve, interval)
+	result.OmegaRatio = omegaRatio(equityCurve)
+	result.RecoveryFactor = recoveryFactor(result.TotalReturn, result.MaxDrawdown)
+	result.Expectancy = expectancy(trades)
+	result.TailRatio = tailRatio(equityCurve)
+	result.VaR95 = historicalVaR(equityCurve, 0.95)
+	result.CVaR95 = historicalCVaR(equityCurve, 0.95)
+	result.MaxDDDuration = maxDrawdownDuration(equityCurve)
+	result.TimeInMarketPct = timeInMarket(trades, len(equityCurve)-1, interval)
+	result.AvgTradeBars = avgTradeDurationBars(trades, interval)
 
 	return result
 }
