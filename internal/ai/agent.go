@@ -690,6 +690,15 @@ func (a *Agent) chatOpenRouter(ctx context.Context, userMessage string) (string,
 	return result.Choices[0].Message.Content, nil
 }
 
+// chatOpenRouterStream sends a streaming chat completion to OpenRouter.
+// Content deltas are forwarded through tokenCh as they arrive.
+func (a *Agent) chatOpenRouterStream(ctx context.Context, userMessage string, tokenCh chan<- string) (string, error) {
+	client := NewOpenRouterClient(a.openrouterKey)
+	return client.ChatCompletionStream(ctx, modelAPIName(a.modelID), a.effectivePrompt(), userMessage, func(chunk string) {
+		tokenCh <- chunk
+	})
+}
+
 // callAnthropic sends the current conversation to the Anthropic API.
 // Retries up to maxRetries times on transient errors (connection resets, 5xx).
 func (a *Agent) callAnthropic(ctx context.Context) (*apiResponse, error) {
@@ -801,14 +810,11 @@ func extractText(blocks []contentBlock) string {
 // Returns the final complete response text. Tool-use rounds are handled
 // internally. MiniMax falls back to non-streaming.
 func (a *Agent) ChatStream(ctx context.Context, userMessage string, tokenCh chan<- string) (string, error) {
-	if a.provider == ProviderMiniMax || a.provider == ProviderOpenRouter {
-		var resp string
-		var err error
-		if a.provider == ProviderOpenRouter {
-			resp, err = a.chatOpenRouter(ctx, userMessage)
-		} else {
-			resp, err = a.chatMiniMax(ctx, userMessage)
-		}
+	if a.provider == ProviderOpenRouter {
+		return a.chatOpenRouterStream(ctx, userMessage, tokenCh)
+	}
+	if a.provider == ProviderMiniMax {
+		resp, err := a.chatMiniMax(ctx, userMessage)
 		if err != nil {
 			return "", err
 		}

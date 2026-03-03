@@ -250,18 +250,31 @@ func RenderPrices(client *api.PapernickClient, symbols []string, width int) stri
 	cards = append(cards, title)
 
 	for _, p := range prices {
-		cards = append(cards, renderPriceCard(p, cardWidth))
+		// Try to fetch a short price history for the sparkline.
+		var history []float64
+		if candles, err := market.FetchKlines(p.Symbol, "1h", 24); err == nil && len(candles) > 0 {
+			history = market.ClosePrices(candles)
+		}
+		cards = append(cards, renderPriceCard(p, history, cardWidth))
 	}
 	sym := strings.TrimSuffix(symbols[0], "USDT")
 	return strings.Join(cards, "\n") + NextSteps("/chart "+sym, "/buy "+sym)
 }
 
-func renderPriceCard(p api.Price, width int) string {
+func renderPriceCard(p api.Price, history []float64, width int) string {
 	name := BrandStyle.Render(p.Symbol)
 	price := lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).
 		Render(formatPrice(p.Price))
 
-	body := fmt.Sprintf("%s  %s", name, price)
+	sparkWidth := 24
+	sparkStr := ""
+	if len(history) >= 2 {
+		up := lipgloss.NewStyle().Foreground(ColorPrimary)
+		down := lipgloss.NewStyle().Foreground(ColorError)
+		sparkStr = "  " + SparklineWithColor(history, sparkWidth, up, down)
+	}
+
+	body := fmt.Sprintf("%s  %s%s", name, price, sparkStr)
 	return Card(width).Render(body)
 }
 
@@ -1190,29 +1203,62 @@ func RenderChart(client *api.PapernickClient, symbol string, width int) string {
 	} else {
 		data = generateSparklineData(currentPrice, 50)
 	}
-	sparkline := renderSparkline(data, cardWidth-8)
 
-	// Calculate simulated high/low from the data.
-	high, low := data[0], data[0]
-	for _, v := range data {
-		if v > high {
-			high = v
-		}
-		if v < low {
-			low = v
+	return RenderSparkCard(prices[0].Symbol, data, cardWidth)
+}
+
+// RenderSparkCard renders a standalone sparkline chart card for a symbol.
+// It shows a braille mini-chart, a single-line sparkline, and high/low stats.
+func RenderSparkCard(symbol string, prices []float64, width int) string {
+	if len(prices) == 0 {
+		return DimStyle.Render("  No data for chart")
+	}
+
+	upStyle := lipgloss.NewStyle().Foreground(ColorPrimary)
+	downStyle := lipgloss.NewStyle().Foreground(ColorError)
+
+	chartWidth := max(width-8, 10)
+
+	// Braille mini-chart (3 rows of braille = 12 vertical pixels).
+	miniChart := MiniChartWithColor(prices, chartWidth, 3, upStyle, downStyle)
+
+	// Single-line sparkline.
+	sparkline := SparklineWithColor(prices, chartWidth, upStyle, downStyle)
+
+	// Compute high/low.
+	cleaned := cleanData(prices)
+	if len(cleaned) == 0 {
+		return DimStyle.Render("  No valid data for chart")
+	}
+	high, low := bounds(cleaned)
+	currentPrice := cleaned[len(cleaned)-1]
+
+	// Trend indicator.
+	var trendStr string
+	if len(cleaned) >= 2 {
+		pctChange := (cleaned[len(cleaned)-1] - cleaned[0]) / cleaned[0] * 100
+		if pctChange >= 0 {
+			trendStr = upStyle.Render(fmt.Sprintf("+%.2f%%", pctChange))
+		} else {
+			trendStr = downStyle.Render(fmt.Sprintf("%.2f%%", pctChange))
 		}
 	}
 
 	var lines []string
 	lines = append(lines, "")
-	lines = append(lines, BrandStyle.Render(prices[0].Symbol)+"  "+
-		lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(formatPrice(currentPrice)))
+	headerLine := BrandStyle.Render(symbol) + "  " +
+		lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(formatPrice(currentPrice))
+	if trendStr != "" {
+		headerLine += "  " + trendStr
+	}
+	lines = append(lines, headerLine)
 	lines = append(lines, "")
+	lines = append(lines, miniChart)
 	lines = append(lines, sparkline)
 	lines = append(lines, "")
 	lines = append(lines, DimStyle.Render("H ")+formatPrice(high)+
 		DimStyle.Render("  L ")+formatPrice(low)+
-		DimStyle.Render("  |  50 points"))
+		DimStyle.Render(fmt.Sprintf("  |  %d points", len(cleaned))))
 	lines = append(lines, "")
 
 	content := strings.Join(lines, "\n")
@@ -1220,7 +1266,7 @@ func RenderChart(client *api.PapernickClient, symbol string, width int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorPrimary).
 		Padding(0, 2).
-		Width(cardWidth).
+		Width(max(width, 20)).
 		Render(content)
 
 	return SecondaryStyle.Render("  Sparkline Chart") + "\n" + box
@@ -1238,48 +1284,12 @@ func generateSparklineData(basePrice float64, n int) []float64 {
 	return data
 }
 
-// renderSparkline renders data as braille block characters.
+// renderSparkline renders data as block characters with trend coloring.
+// Delegates to the Sparkline/SparklineWithColor functions in sparkline.go.
 func renderSparkline(data []float64, barWidth int) string {
-	if len(data) == 0 || barWidth <= 0 {
-		return ""
-	}
-
-	minVal, maxVal := data[0], data[0]
-	for _, v := range data {
-		if v < minVal {
-			minVal = v
-		}
-		if v > maxVal {
-			maxVal = v
-		}
-	}
-
-	blocks := []rune{'▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
-	span := maxVal - minVal
-	if span == 0 {
-		span = 1
-	}
-
-	var result []rune
-	for i := 0; i < barWidth && i < len(data); i++ {
-		idx := i * len(data) / barWidth
-		normalized := (data[idx] - minVal) / span
-		blockIdx := int(normalized * float64(len(blocks)-1))
-		if blockIdx >= len(blocks) {
-			blockIdx = len(blocks) - 1
-		}
-		if blockIdx < 0 {
-			blockIdx = 0
-		}
-		result = append(result, blocks[blockIdx])
-	}
-
-	style := lipgloss.NewStyle().Foreground(ColorPrimary)
-	if data[len(data)-1] < data[0] {
-		style = lipgloss.NewStyle().Foreground(ColorError)
-	}
-
-	return style.Render(string(result))
+	up := lipgloss.NewStyle().Foreground(ColorPrimary)
+	down := lipgloss.NewStyle().Foreground(ColorError)
+	return SparklineWithColor(data, barWidth, up, down)
 }
 
 // --- Trade confirmation card ---

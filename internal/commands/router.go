@@ -64,6 +64,7 @@ const (
 	TypeFunding   // /funding
 	TypeDashboard // /dashboard, /dash
 	TypeVibe      // /vibe
+	TypeExport    // /export
 
 	TypeUnknown
 )

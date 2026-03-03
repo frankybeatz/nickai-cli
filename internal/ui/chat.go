@@ -16,6 +16,7 @@ import (
 	"github.com/nickai/cli/internal/alert"
 	"github.com/nickai/cli/internal/api"
 	"github.com/nickai/cli/internal/automation"
+	"github.com/nickai/cli/internal/backtest"
 	"github.com/nickai/cli/internal/config"
 	"github.com/nickai/cli/internal/credential"
 	"github.com/nickai/cli/internal/guidance"
@@ -51,6 +52,10 @@ var oscResponseRe = regexp.MustCompile(`\x1b?\]1[01];rgb:[0-9a-fA-F/]+\x07?`)
 // Requires ESC or ] prefix to avoid false positives on valid hex user input.
 var oscLeakRe = regexp.MustCompile(`[\x1b\]]+[01]?1?;?r?g?b?:?[0-9a-fA-F]{0,4}/?[0-9a-fA-F]{4}/[0-9a-fA-F]{4}\x07?`)
 
+// ansiEscRe matches any ANSI escape sequence that could leak as a key event:
+// CSI (ESC[...), OSC (ESC]...), DCS (ESCP...), and other standard sequences.
+var ansiEscRe = regexp.MustCompile(`\x1b[\[\]PX^_][^\x1b]*`)
+
 var knownCommands = []string{
 	"/help", "/status", "/orders", "/agents", "/templates",
 	"/buy", "/sell", "/price", "/watch", "/snapshot",
@@ -66,6 +71,7 @@ var knownCommands = []string{
 	"/stock", "/screen", "/odds", "/lines", "/funding",
 	"/dashboard", "/dash",
 	"/vibe",
+	"/export",
 }
 
 var knownSymbols = []string{
@@ -109,6 +115,12 @@ type aiStreamDoneMsg struct {
 type apiResponseMsg struct {
 	content string
 	isTrade bool // when true, refresh portfolio context after displaying
+}
+
+// backtestDoneMsg carries the result of an async backtest run.
+type backtestDoneMsg struct {
+	result *backtest.Result
+	err    error
 }
 
 // alertCheckMsg triggers a periodic alert check.
@@ -304,6 +316,9 @@ type Model struct {
 	cachedTradeCount    int
 	cachedHasAnalyzed   bool
 	cachedHasBacktested bool
+
+	// Last backtest result (for /export backtest).
+	lastBacktestResult *backtest.Result
 
 	// Cached welcome screen content (avoids re-rendering + random flicker on every frame).
 	cachedWelcome      string
@@ -674,6 +689,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.streaming = false
 		m.streamCh = nil
+		// Clean up any escape sequences that leaked into the text input
+		// buffer during streaming (e.g. OSC color responses, ANSI fragments).
+		if val := m.textInput.Value(); val != "" {
+			cleaned := oscLeakRe.ReplaceAllString(oscResponseRe.ReplaceAllString(val, ""), "")
+			cleaned = ansiEscRe.ReplaceAllString(cleaned, "")
+			if cleaned != val {
+				m.textInput.SetValue(cleaned)
+				if cleaned == "" {
+					m.textInput.CursorStart()
+				} else {
+					m.textInput.CursorEnd()
+				}
+			}
+		}
 		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
 			if msg.err != nil {
 				m.messages[len(m.messages)-1].content = ErrorStyle.Render("  AI error: ") + msg.err.Error()
@@ -707,6 +736,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			"  " + lipgloss.NewStyle().Foreground(ColorWhite).Bold(true).Render(msg.req.Display) + "\n" +
 			DimStyle.Render("  Press y to confirm, n to cancel")
 		m.addBotMessage(confirmCard)
+		m.updateViewport()
+		return m, nil
+
+	case backtestDoneMsg:
+		m.loading = false
+		var content string
+		if msg.err != nil {
+			content = ErrorStyle.Render("  Backtest failed: ") + msg.err.Error()
+		} else {
+			m.lastBacktestResult = msg.result
+			content = RenderBacktestCard(msg.result)
+		}
+		if len(m.messages) > 0 && !m.messages[len(m.messages)-1].isUser {
+			m.messages[len(m.messages)-1].content = content
+		}
 		m.updateViewport()
 		return m, nil
 
@@ -1117,8 +1161,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Drop leaked OSC terminal color responses (e.g. ]11;rgb:XXXX/XXXX/XXXX)
 		// and any partial hex-color fragments that arrive as separate events.
+		// Also drop any ANSI escape sequences that leak as keyboard input.
 		s := msg.String()
-		if oscResponseRe.MatchString(s) || oscLeakRe.MatchString(s) {
+		if oscResponseRe.MatchString(s) || oscLeakRe.MatchString(s) || ansiEscRe.MatchString(s) {
 			return m, nil
 		}
 
@@ -1132,6 +1177,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Ignore key input during boot animation.
 		if m.booting {
+			return m, nil
+		}
+		// During streaming, block all key input except Ctrl+C (handled above)
+		// and Esc (to cancel). This prevents escape sequences from the terminal
+		// or streamed content from contaminating the text input buffer.
+		if m.streaming {
+			if msg.Type == tea.KeyEsc {
+				// Allow Esc to cancel streaming gracefully (user may want to stop).
+				return m, nil
+			}
 			return m, nil
 		}
 
@@ -1193,10 +1248,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward non-key messages to sub-components.
+	// During streaming, skip textInput updates to prevent escape sequence
+	// contamination. The textInput is effectively frozen while the AI streams.
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
-	m.textInput, cmd = m.textInput.Update(msg)
-	cmds = append(cmds, cmd)
+	if !m.streaming {
+		m.textInput, cmd = m.textInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 

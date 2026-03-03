@@ -367,6 +367,14 @@ func (m Model) dispatchCommand(result commands.Result) (tea.Model, tea.Cmd) {
 		m.updateViewport()
 		return m, nil
 
+	case commands.TypeExport:
+		output := m.handleExport(result.Args)
+		if output != "" {
+			m.addBotMessage(output)
+		}
+		m.updateViewport()
+		return m, nil
+
 	case commands.TypeAnalytics:
 		// Async API call with loading spinner.
 		m.loading = true
@@ -553,6 +561,9 @@ func (m *Model) renderResult(r commands.Result) string {
 	case commands.TypeAuto:
 		output, _ := m.handleAuto(r.Args)
 		return output
+
+	case commands.TypeExport:
+		return m.handleExport(r.Args)
 
 	case commands.TypeTheme:
 		return m.handleTheme(r.Args)
@@ -926,10 +937,7 @@ func (m *Model) handleBacktest(args []string) (string, tea.Cmd) {
 			tea.Tick(80*time.Millisecond, func(t time.Time) tea.Msg { return spinnerTickMsg{} }),
 			func() tea.Msg {
 				result, err := backtest.Run(strat)
-				if err != nil {
-					return apiResponseMsg{content: ErrorStyle.Render("  Backtest failed: ") + err.Error()}
-				}
-				return apiResponseMsg{content: RenderBacktestCard(result)}
+				return backtestDoneMsg{result: result, err: err}
 			},
 		)
 

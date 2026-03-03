@@ -137,6 +137,13 @@ var Registry = []CommandDef{
 	{Type: TypeScreen, Primary: "/screen", Description: "Stock screener", Category: "Multi-Vertical"},
 	{Type: TypeOdds, Primary: "/odds", Description: "Betting odds lookup", Category: "Multi-Vertical"},
 	{Type: TypeLines, Primary: "/lines", Description: "Line movement tracker", Category: "Multi-Vertical"},
+
+	// --- Export ---
+	{Type: TypeExport, Primary: "/export", Description: "Export data to CSV", Category: "Tools", SubCommands: []SubCommandDef{
+		{Name: "trades", Description: "Export trade history"},
+		{Name: "portfolio", Description: "Export portfolio positions"},
+		{Name: "backtest", Description: "Export last backtest results"},
+	}},
 }
 
 // BuildCommandMap generates the allCommands routing map from the Registry.
