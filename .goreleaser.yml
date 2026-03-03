@@ -35,7 +35,8 @@ changelog:
   sort: asc
 
 brews:
-  - repository:
+  - name: nickai
+    repository:
       owner: frankybeatz
       name: homebrew-nickai
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
