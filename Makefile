@@ -37,10 +37,25 @@ release: clean
 	@echo "Binaries in $(BUILD)/"
 	@ls -lh $(BUILD)/
 
+# Build Nick Node binary.
+.PHONY: node
+node:
+	go build -ldflags "$(LDFLAGS)" -o nickai-node ./cmd/node/
+
+# Build Docker image.
+.PHONY: docker
+docker:
+	docker build -t nickai .
+
+# Run Docker container.
+.PHONY: docker-run
+docker-run: docker
+	docker compose up -d
+
 # Clean build artifacts.
 .PHONY: clean
 clean:
-	rm -rf $(BUILD) $(BINARY)
+	rm -rf $(BUILD) $(BINARY) nickai-node
 
 # Generate demo GIF (requires vhs: brew install vhs).
 .PHONY: demo

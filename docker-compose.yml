@@ -1,0 +1,16 @@
+services:
+  node:
+    build: .
+    ports:
+      - "9400:9400"
+    volumes:
+      - nickai-data:/home/nickai/.nickai
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nickai-node", "ping", "localhost:9400"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  nickai-data:
