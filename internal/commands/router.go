@@ -66,6 +66,7 @@ const (
 	TypeVibe      // /vibe
 	TypeExport    // /export
 	TypePlugin    // /plugin
+	TypeNode      // /node
 
 	TypeUnknown
 )
@@ -90,6 +91,7 @@ var subcommandCommands = map[CommandType]bool{
 	TypeConnect: true,
 	TypeWallet:  true,
 	TypeMarkets: true,
+	TypeNode:    true,
 }
 
 // Route parses raw user input and returns a Result.

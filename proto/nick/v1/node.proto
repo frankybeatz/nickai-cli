@@ -1,0 +1,239 @@
+syntax = "proto3";
+package nick.v1;
+option go_package = "github.com/nickai/cli/internal/node/pb";
+
+import "google/protobuf/timestamp.proto";
+
+// NickNode is the core service for always-on strategy execution,
+// price streaming, alert dispatch, and backtest offloading.
+service NickNode {
+  // Health check — returns uptime and version.
+  rpc Ping(PingRequest) returns (PingResponse);
+
+  // Strategy lifecycle
+  rpc DeployStrategy(DeployStrategyRequest) returns (DeployStrategyResponse);
+  rpc ListStrategies(ListStrategiesRequest) returns (ListStrategiesResponse);
+  rpc StopStrategy(StopStrategyRequest) returns (StopStrategyResponse);
+
+  // Price streaming — server-streaming RPC.
+  rpc StreamPrices(StreamPricesRequest) returns (stream PriceTick);
+
+  // Backtest jobs — offload to node, poll for results.
+  rpc SubmitBacktest(SubmitBacktestRequest) returns (SubmitBacktestResponse);
+  rpc GetBacktestResult(GetBacktestResultRequest) returns (GetBacktestResultResponse);
+
+  // Alerts
+  rpc CreateAlert(CreateAlertRequest) returns (CreateAlertResponse);
+  rpc ListAlerts(ListAlertsRequest) returns (ListAlertsResponse);
+
+  // Node status — uptime, resource usage, connected symbols.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Ping
+// ---------------------------------------------------------------------------
+
+message PingRequest {}
+
+message PingResponse {
+  string version = 1;
+  int64  uptime_seconds = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Strategy
+// ---------------------------------------------------------------------------
+
+// StrategyCondition mirrors backtest.Condition.
+message StrategyCondition {
+  string indicator    = 1;
+  string operator     = 2;
+  double value        = 3;
+  string compare_with = 4;
+}
+
+message StrategySpec {
+  string name                          = 1;
+  string symbol                        = 2;
+  repeated StrategyCondition entry_rules = 3;
+  repeated StrategyCondition exit_rules  = 4;
+  double stop_loss_pct                 = 5;
+  double take_profit_pct               = 6;
+  double position_size                 = 7;
+  string interval                      = 8;  // candle interval for monitoring, e.g. "1d", "4h"
+}
+
+enum StrategyStatus {
+  STRATEGY_STATUS_UNSPECIFIED = 0;
+  STRATEGY_STATUS_RUNNING     = 1;
+  STRATEGY_STATUS_STOPPED     = 2;
+  STRATEGY_STATUS_ERRORED     = 3;
+}
+
+message StrategyInfo {
+  string                       id          = 1;
+  StrategySpec                 spec        = 2;
+  StrategyStatus               status      = 3;
+  google.protobuf.Timestamp    deployed_at = 4;
+  string                       error       = 5;  // non-empty if status == ERRORED
+}
+
+message DeployStrategyRequest {
+  StrategySpec spec = 1;
+}
+
+message DeployStrategyResponse {
+  string id = 1;
+}
+
+message ListStrategiesRequest {}
+
+message ListStrategiesResponse {
+  repeated StrategyInfo strategies = 1;
+}
+
+message StopStrategyRequest {
+  string id = 1;
+}
+
+message StopStrategyResponse {
+  bool stopped = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Price streaming
+// ---------------------------------------------------------------------------
+
+message StreamPricesRequest {
+  repeated string symbols = 1;
+}
+
+message PriceTick {
+  string                     symbol    = 1;
+  double                     price     = 2;
+  double                     volume_24h = 3;
+  google.protobuf.Timestamp  timestamp = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Backtest
+// ---------------------------------------------------------------------------
+
+message BacktestCondition {
+  string indicator    = 1;
+  string operator     = 2;
+  double value        = 3;
+  string compare_with = 4;
+}
+
+message BacktestSpec {
+  string                         name            = 1;
+  string                         symbol          = 2;
+  repeated BacktestCondition     entry_rules     = 3;
+  repeated BacktestCondition     exit_rules      = 4;
+  double                         stop_loss_pct   = 5;
+  double                         take_profit_pct = 6;
+  double                         position_size   = 7;
+  string                         period          = 8;  // e.g. "180d", "1y"
+  double                         slippage_bps    = 9;
+  double                         commission_bps  = 10;
+}
+
+message BacktestTrade {
+  google.protobuf.Timestamp entry_time  = 1;
+  google.protobuf.Timestamp exit_time   = 2;
+  double                    entry_price = 3;
+  double                    exit_price  = 4;
+  double                    pnl_pct     = 5;
+  string                    reason      = 6;
+}
+
+message BacktestResult {
+  string                  strategy      = 1;
+  string                  symbol        = 2;
+  string                  period        = 3;
+  repeated BacktestTrade  trades        = 4;
+  int32                   total_trades  = 5;
+  double                  win_rate      = 6;
+  double                  total_return  = 7;
+  double                  sharpe_ratio  = 8;
+  double                  max_drawdown  = 9;
+  double                  profit_factor = 10;
+  double                  best_trade    = 11;
+  double                  worst_trade   = 12;
+  repeated double         equity_curve  = 13;
+}
+
+enum BacktestJobStatus {
+  BACKTEST_JOB_STATUS_UNSPECIFIED = 0;
+  BACKTEST_JOB_STATUS_PENDING     = 1;
+  BACKTEST_JOB_STATUS_RUNNING     = 2;
+  BACKTEST_JOB_STATUS_COMPLETED   = 3;
+  BACKTEST_JOB_STATUS_FAILED      = 4;
+}
+
+message SubmitBacktestRequest {
+  BacktestSpec spec = 1;
+}
+
+message SubmitBacktestResponse {
+  string job_id = 1;
+}
+
+message GetBacktestResultRequest {
+  string job_id = 1;
+}
+
+message GetBacktestResultResponse {
+  BacktestJobStatus status = 1;
+  BacktestResult    result = 2;  // populated when status == COMPLETED
+  string            error  = 3;  // populated when status == FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Alerts
+// ---------------------------------------------------------------------------
+
+message AlertSpec {
+  string symbol   = 1;
+  string operator = 2;  // ">" or "<"
+  double target   = 3;
+}
+
+message AlertInfo {
+  string                     id         = 1;
+  AlertSpec                  spec       = 2;
+  google.protobuf.Timestamp  created_at = 3;
+  bool                       triggered  = 4;
+}
+
+message CreateAlertRequest {
+  AlertSpec spec = 1;
+}
+
+message CreateAlertResponse {
+  string id = 1;
+}
+
+message ListAlertsRequest {}
+
+message ListAlertsResponse {
+  repeated AlertInfo alerts = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Node status
+// ---------------------------------------------------------------------------
+
+message GetStatusRequest {}
+
+message GetStatusResponse {
+  string          version              = 1;
+  int64           uptime_seconds       = 2;
+  int32           running_strategies   = 3;
+  int32           active_alerts        = 4;
+  repeated string connected_symbols    = 5;
+  int64           memory_bytes         = 6;
+  int32           goroutines           = 7;
+}
