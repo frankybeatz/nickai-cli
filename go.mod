@@ -10,8 +10,9 @@ require (
 	github.com/charmbracelet/x/ansi v0.8.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mark3labs/mcp-go v0.32.0
+	github.com/muesli/termenv v0.16.0
 	github.com/zalando/go-keyring v0.2.6
-	google.golang.org/grpc v1.79.1
+	google.golang.org/grpc v1.79.3
 )
 
 require (
@@ -38,7 +39,6 @@ require (
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
